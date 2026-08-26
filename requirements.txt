@@ -1,0 +1,3 @@
+# Requirements for CMUQ Arena - Arcade Fighting Game
+# Just pygame - nothing else needed
+pygame-ce

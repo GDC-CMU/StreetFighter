@@ -1,0 +1,17 @@
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore virtual environment
+venv/
+/home/venv/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+.github/
+# Ignore test files
+test_basic.py
+test_features_new.py
+test_game_end.py
+test_parry_projectile.py
