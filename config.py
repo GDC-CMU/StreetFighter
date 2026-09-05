@@ -208,7 +208,7 @@ DEFAULT_P2_CONTROLS = {
 # | x            | 2      |
 # | y            | 3      |
 # | Insert money | 4      |
-# | p1 (RESET)   | 5      |
+# | p1 (BACK)    | 5      |
 # | Select       | 8      |
 # | Start        | 9      |
 #
@@ -254,7 +254,8 @@ ARCADE_P2_AXIS = {
     'down': (1, 1),
 }
 
-# Reset button - P1 button (5) on any joystick quits the game
+# P1 button (5) on any joystick is the universal "back one level" action,
+# handled in game.py's _go_back(); from the main menu it exits the process.
 ARCADE_RESET_BUTTON = '5'
 
 # Hat/DPAD button mappings (for PS4/Switch controllers)

@@ -289,12 +289,10 @@ class Game:
         Args:
             key: Pygame key constant
         """
-        # Global: ESC to go back/quit
+        # Global: ESC mirrors the P1 arcade button - back one level,
+        # or exit the process entirely from the main menu.
         if key == pygame.K_ESCAPE:
-            if self.state == "MAIN_MENU":
-                self.running = False
-            else:
-                self.state = "MAIN_MENU"
+            self._go_back()
                 
         # Main menu keyboard navigation
         if self.state == "MAIN_MENU":
@@ -336,6 +334,54 @@ class Game:
                 self.p2_coin_inserted = True  # Keep 2-player mode enabled
                 self.state = "MAIN_MENU"
     
+    # ==================== UNIVERSAL BACK / EXIT ACTION ====================
+    
+    def _go_back(self):
+        """
+        Handle the universal "back / up one level" action, shared by the P1
+        arcade button (button 5) and the Esc key so cabinet and desktop
+        development behave identically.
+        
+        This steps the state machine up one level per press:
+            FIGHT             -> CHARACTER_SELECT (abort the fight; or
+                                  MAIN_MENU if this is just the attract-mode
+                                  demo, matching how any other input wakes it)
+            GAME_OVER         -> MAIN_MENU
+            CHARACTER_SELECT  -> MAIN_MENU
+            CONTROLS          -> MAIN_MENU
+            ABOUT             -> MAIN_MENU
+            MAIN_MENU         -> process exit via sys.exit(0)
+        
+        MAIN_MENU is the top of the stack - nothing sits above it, so a press
+        there ends the process. This is how the arcade cabinet's outer menu
+        and the launcher regain control, so it must always call sys.exit(0)
+        and must never be changed to anything else.
+        """
+        if self.state == "MAIN_MENU":
+            print("Back button pressed at main menu - exiting game")
+            joystick.quit()
+            pygame.quit()
+            sys.exit(0)
+        elif self.state == "FIGHT":
+            if self.attract_mode:
+                # Just the screensaver demo - wake it the same way any other
+                # input does, straight back to the main menu.
+                self.attract_mode = False
+                self.idle_timer = 0
+                self.state = "MAIN_MENU"
+            else:
+                self._exit_fight_to_character_select()
+        elif self.state == "GAME_OVER":
+            self.p1_selected = False
+            self.p2_selected = False
+            self.p1_cursor = 0
+            self.p2_cursor = 0
+            self.p2_coin_inserted = True
+            self.state = "MAIN_MENU"
+        else:
+            # CHARACTER_SELECT, CONTROLS, ABOUT
+            self.state = "MAIN_MENU"
+    
     # ==================== JOYSTICK INPUT HANDLING ====================
     
     def _on_joy_press(self, button, joystick_id):
@@ -347,12 +393,12 @@ class Game:
             button: String representing the button (e.g., '0', '1', 'H0')
             joystick_id: ID of the joystick that triggered the event
         """
-        # RESET BUTTON - P1 button (5) quits the game on any joystick
+        # BACK BUTTON - P1 button (5) on any joystick backs out one level of
+        # the state machine (see _go_back). This event only fires on the
+        # JOYBUTTONDOWN edge, so a held button cannot re-trigger it.
         if button == c.ARCADE_RESET_BUTTON:
-            print("Reset button pressed - exiting game")
-            joystick.quit()
-            pygame.quit()
-            sys.exit(0)
+            self._go_back()
+            return
         
         # Track button state
         if joystick_id in self.joy_input_state:
@@ -360,9 +406,9 @@ class Game:
         
         # Handle menu/character select navigation
         if self.state == "MAIN_MENU":
-            # Light kick acts as back in main menu
+            # Light kick mirrors P1/Esc as back in main menu
             if button == '2':
-                self.running = False
+                self._go_back()
             else:
                 self._handle_joy_menu(button, joystick_id)
         elif self.state == "CONTROLS":
@@ -769,7 +815,7 @@ class Game:
             ("SELECT: DASH", ""),
             ("START: PARRY", ""),
             ("", ""),
-            ("P1 BUTTON: EXIT GAME", "(RESET)"),
+            ("P1 BUTTON: BACK", "(EXIT AT MENU)"),
         ]
         
         for label, note in arcade_info:
@@ -788,7 +834,7 @@ class Game:
         info_y += 10
         info_lines = [
             "BLOCK: HOLD DOWN TO BLOCK ATTACKS",
-            "ESC: RETURN TO MENU / EXIT",
+            "ESC / P1: BACK ONE SCREEN (EXIT AT MAIN MENU)",
             "SUPPORTS PS4/PS5 AND SWITCH CONTROLLERS",
         ]
         
@@ -994,6 +1040,45 @@ class Game:
         
         self.state = "FIGHT"
         self.last_timer_update = pygame.time.get_ticks()
+    
+    def _exit_fight_to_character_select(self):
+        """
+        Abort the current fight (triggered by the P1/Esc back action) and
+        return to character select. Tears down every piece of fight-only
+        state - fighters, projectiles/effects, combat system, round and
+        score counters - so a fight started afterwards never inherits
+        leftover state from the one that was backed out of.
+        """
+        self.p1 = None
+        self.p2 = None
+        self.particles = []
+        self.projectiles = []
+        self.special_effects = []
+        self.hit_effects = []
+        self.combat_system = CombatSystem()
+        
+        self.p1_wins = 0
+        self.p2_wins = 0
+        self.current_round = 1
+        self.round_over = False
+        self.round_transition_timer = 0
+        self.round_winner = None
+        self.winner_sequence_active = False
+        self.winner_sequence_frame = 0
+        
+        self.round_timer = 99
+        self.screen_shake = 0
+        self.screen_shake_offset = (0, 0)
+        self.hit_freeze_frames = 0
+        self.ko_slowdown = False
+        self.slowdown_timer = 0
+        self.counter_attack_window = {'p1': 0, 'p2': 0}
+        
+        # Both players choose again for the next fight
+        self.p1_selected = False
+        self.p2_selected = False
+        
+        self.state = "CHARACTER_SELECT"
     
     def _start_attract_mode(self):
         """Start AI vs AI attract mode demo - exciting showcase of gameplay!"""

@@ -62,9 +62,9 @@ A vintage arcade-style fighting game featuring four unique professor characters,
 | Special Move | Insert (Button 4) |
 | Dash | Select (Button 8) |
 | Parry | Start (Button 9) |
-| **EXIT/RESET** | **P1 (Button 5)** |
+| **BACK** | **P1 (Button 5)** |
 
-**Note:** The P1 button (Button 5) will immediately exit the game. This is the reset button for the arcade box.
+**Note:** The P1 button (Button 5) always goes back one level: it ends the current fight and returns to character select while fighting, returns to the main menu from any other screen, and exits the game only from the main menu (mirrored by Esc on keyboard).
 
 ## 🎓 Credits
 

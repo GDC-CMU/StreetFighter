@@ -19,7 +19,7 @@ Key-Map for Arcade Machine:
 | x            | 2      |
 | y            | 3      |
 | Insert money | 4      |
-| p1 (RESET)   | 5      |
+| p1 (BACK)    | 5      |
 | Select       | 8      |
 | Start        | 9      |
 """
