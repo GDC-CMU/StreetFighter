@@ -115,7 +115,11 @@ INPUT_BUFFER_FRAMES = 60  # Store 1 second of inputs at 60fps
 MOTION_INPUT_WINDOW = 20  # Frames to complete motion input
 
 # ===== ATTRACT MODE =====
-ATTRACT_MODE_TIMEOUT = 1800  # 30 seconds at 60fps
+# Seconds of no genuine input on the main menu before the attract-mode
+# demo (AI vs AI showcase fight) starts. Tune this one value - everything
+# else derives from it.
+ATTRACT_MODE_IDLE_SECONDS = 15
+ATTRACT_MODE_TIMEOUT = ATTRACT_MODE_IDLE_SECONDS * FPS  # idle_timer counts frames, not seconds
 
 # Attack Frame Data
 FRAME_DATA = {

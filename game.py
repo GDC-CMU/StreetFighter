@@ -75,6 +75,11 @@ class Game:
             1: {'buttons': set(), 'axis': set()},  # Player 2 joystick
         }
         
+        # Currently-held keyboard keys (tracked via KEYDOWN/KEYUP edges so
+        # attract-mode/idle-timer checks don't depend on any(get_pressed()),
+        # which some arcade-box pygame builds don't support reliably)
+        self.keys_down = set()
+        
         # Debouncing for menu/character select joystick scrolling (prevent too-fast scrolling)
         self.joy_menu_scroll_cooldown = 0
         self.joy_char_select_cooldown = {0: 0, 1: 0}  # Per-player cooldown
@@ -212,7 +217,11 @@ class Game:
                         mouse_clicked = True
                         
                 if event.type == pygame.KEYDOWN:
+                    self.keys_down.add(event.key)
                     self._handle_keypress(event.key)
+                
+                if event.type == pygame.KEYUP:
+                    self.keys_down.discard(event.key)
                 
                 # Handle joystick events
                 joystick.handle_event(event)
@@ -612,23 +621,19 @@ class Game:
             mouse_pos: Current mouse position tuple (x, y)
             mouse_clicked: Boolean indicating if mouse was clicked
         """
-        # Track idle time for attract mode
-        keys = pygame.key.get_pressed()
-        
-        # Check for start keys instead of any(keys) - pygame-ce doesn't support iterating all keys
-        # Only check the keys that matter: Space, Enter, Z, X (common arcade buttons)
-        start_keys_pressed = (
-            keys[pygame.K_SPACE] or 
-            keys[pygame.K_RETURN] or 
-            keys[pygame.K_z] or 
-            keys[pygame.K_x]
-        )
-        
+        # Track idle time for attract mode. Genuine visitor input is any
+        # held key, any joystick button, or a stick pushed past its
+        # deadzone - NOT raw analog noise. Digital axis state is already
+        # debounced by the joystick module (only set once an axis crosses
+        # its threshold, cleared once it settles back near center), so a
+        # noisy/drifting stick at rest can't keep resetting this forever.
         any_input = (
-            mouse_clicked or 
-            start_keys_pressed or 
-            any(self.joy_input_state[0]['buttons']) or 
-            any(self.joy_input_state[1]['buttons'])
+            mouse_clicked or
+            bool(self.keys_down) or
+            any(self.joy_input_state[0]['buttons']) or
+            any(self.joy_input_state[1]['buttons']) or
+            bool(self.joy_input_state[0]['axis']) or
+            bool(self.joy_input_state[1]['axis'])
         )
         
         if any_input:
@@ -1184,15 +1189,16 @@ class Game:
         """Update fight logic"""
         # Check for input during attract mode
         if self.attract_mode:
-            keys = pygame.key.get_pressed()
-            # Check only specific keys for arcade compatibility (pygame-ce doesn't support any(keys))
-            start_keys_pressed = (
-                keys[pygame.K_SPACE] or 
-                keys[pygame.K_RETURN] or 
-                keys[pygame.K_z] or 
-                keys[pygame.K_x]
+            # Genuine visitor input immediately cancels the demo: any held
+            # key, any joystick button, or a stick pushed past its deadzone
+            # (already debounced by the joystick module).
+            any_input = (
+                bool(self.keys_down) or
+                any(self.joy_input_state[0]['buttons']) or
+                any(self.joy_input_state[1]['buttons']) or
+                bool(self.joy_input_state[0]['axis']) or
+                bool(self.joy_input_state[1]['axis'])
             )
-            any_input = start_keys_pressed or any(self.joy_input_state[0]['buttons']) or any(self.joy_input_state[1]['buttons'])
             if any_input:
                 self.attract_mode = False
                 self.idle_timer = 0
