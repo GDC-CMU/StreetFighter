@@ -1,4 +1,6 @@
 # Use compatibility layer for arcade machine support
+import os
+
 from pygame_compat import pygame
 
 # --- CONFIGURATION & CONSTANTS ---
@@ -6,6 +8,16 @@ from pygame_compat import pygame
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 FPS = 60
+
+# Set STREETFIGHTER_WINDOWED=1 to run in a window instead of fullscreen.
+# Fullscreen is the default because that is how the cabinet is played;
+# developing on a laptop against a fullscreen window is painful.
+ENV_WINDOWED = "STREETFIGHTER_WINDOWED"
+
+
+def windowed_requested():
+    """Whether STREETFIGHTER_WINDOWED asks for a window rather than fullscreen."""
+    return os.environ.get(ENV_WINDOWED, "").strip().lower() in ("1", "true", "yes", "on")
 
 # Colors
 WHITE = (255, 255, 255)

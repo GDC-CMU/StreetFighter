@@ -66,6 +66,26 @@ A vintage arcade-style fighting game featuring four unique professor characters,
 
 **Note:** The P1 button (Button 5) always goes back one level: it ends the current fight and returns to character select while fighting, returns to the main menu from any other screen, and exits the game only from the main menu (mirrored by Esc on keyboard).
 
+## 🖥️ Running it
+
+```
+pip install -r requirements.txt
+python main.py
+```
+
+The game runs **fullscreen** by default, which is how the cabinet is played. It
+always renders at a logical 800x600 and lets SDL scale that onto whatever panel
+is fitted, so any laptop resolution works. To run in a window instead (much
+easier while developing):
+
+```
+# Windows PowerShell
+$env:STREETFIGHTER_WINDOWED = "1"; python main.py
+
+# bash
+STREETFIGHTER_WINDOWED=1 python main.py
+```
+
 ## 🖼️ Attract-mode preview (ArcadeLauncher)
 
 `assets/preview/` holds a short, pre-rendered animation (`manifest.json` plus

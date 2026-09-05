@@ -49,10 +49,16 @@ class Game:
         if hasattr(pygame, 'mixer'):
             pygame.mixer.init()
         
-        # Display setup - fullscreen scaled for authentic arcade feel
+        # Display setup - fullscreen scaled for authentic arcade feel.
+        # SCALED keeps the game at its logical 800x600 while SDL letterboxes it
+        # onto whatever panel is fitted, so any laptop resolution works too.
+        # STREETFIGHTER_WINDOWED=1 gives a window for development.
+        flags = pygame.SCALED
+        if not c.windowed_requested():
+            flags |= pygame.FULLSCREEN
         self.screen = pygame.display.set_mode(
             (c.SCREEN_WIDTH, c.SCREEN_HEIGHT),
-            pygame.SCALED | pygame.FULLSCREEN
+            flags
         )
         pygame.display.set_caption("CMUQ Arena - Vintage Arcade Fighter")
         
