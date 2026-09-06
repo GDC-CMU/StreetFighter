@@ -4,7 +4,16 @@ Contains reusable UI elements like buttons, text renderers, and visual effects
 """
 
 from pygame_compat import pygame
+from functools import lru_cache
 import config as c
+
+# Presentation colors only; combat/player colors stay in config.
+MENU_TOP = (20, 20, 40)
+MENU_BOTTOM = (5, 5, 15)
+PANEL = (30, 30, 50)
+MUTED = (185, 185, 210)
+RULE = (80, 80, 110)
+P2_ACCENT = (140, 175, 255)
 
 class Button:
     """
@@ -19,7 +28,7 @@ class Button:
             x, y: Top-left position of button
             width, height: Button dimensions
             text: Button label text
-            color: Button background color
+            color: Button accent color
             text_color: Text color
         """
         self.rect = pygame.Rect(x, y, width, height)
@@ -29,10 +38,7 @@ class Button:
         self.hover = False
         self.selected = False
         
-        # Vintage arcade colors
-        self.border_color = c.YELLOW
-        self.shadow_color = c.BLACK
-        self.hover_color = c.YELLOW
+        self.focus_color = c.YELLOW
         
     def update(self, mouse_pos):
         """Update hover state based on mouse position"""
@@ -46,30 +52,24 @@ class Button:
             surface: Pygame surface to draw on
             text_renderer: Text renderer instance for drawing text
         """
-        # Shadow effect for depth
-        shadow_rect = self.rect.copy()
-        shadow_rect.x += 4
-        shadow_rect.y += 4
-        pygame.draw.rect(surface, self.shadow_color, shadow_rect)
-        
-        # Determine button color based on state
-        if self.hover or self.selected:
-            btn_color = self.hover_color
+        # The screen owns focus. A parked pointer must not create a second
+        # selection after keyboard/stick navigation.
+        if self.selected:
+            btn_color = self.focus_color
             current_text_color = c.BLACK
-            border_width = 5
         else:
-            btn_color = self.color
+            btn_color = PANEL
             current_text_color = self.text_color
-            border_width = 3
-            
-        # Draw button background
+
         pygame.draw.rect(surface, btn_color, self.rect)
-        
-        # Draw double border for vintage arcade look
-        pygame.draw.rect(surface, self.border_color, self.rect, border_width)
-        inner_rect = self.rect.inflate(-10, -10)
-        pygame.draw.rect(surface, c.WHITE, inner_rect, 2)
-        
+        pygame.draw.rect(surface, self.color if not self.selected else c.YELLOW,
+                         self.rect, 1)
+        if self.selected:
+            # A shape cue as well as color, with fixed label size/position.
+            x, y = self.rect.left + 18, self.rect.centery
+            pygame.draw.polygon(surface, c.BLACK,
+                                [(x, y - 6), (x + 8, y), (x, y + 6)])
+
         # Draw centered text
         text_surf = text_renderer.render(self.text, 'medium', current_text_color)
         text_x = self.rect.centerx - text_surf.get_width() // 2
@@ -138,15 +138,14 @@ class VintageTextRenderer:
         Returns:
             Pygame surface with rendered text
         """
-        if size not in self.fonts:
-            size = 'medium'
-        
-        font = self.fonts[size]
-        
-        # Render with anti-aliasing for smooth text
-        text_surface = font.render(str(text), True, color)
-        
-        return text_surface
+        # Callers animate alpha on the returned surface. Keep cached originals
+        # private so one announcement cannot fade a later label.
+        return self._render_cached(str(text), size, tuple(color)).copy()
+
+    @lru_cache(maxsize=256)
+    def _render_cached(self, text, size, color):
+        font = self.fonts.get(size, self.fonts['medium'])
+        return font.render(text, True, color)
     
     def render_outlined(self, text, size='medium', color=(255, 255, 255), outline_color=(0, 0, 0), outline_width=2):
         """
@@ -162,10 +161,12 @@ class VintageTextRenderer:
         Returns:
             Pygame surface with outlined text
         """
-        if size not in self.fonts:
-            size = 'medium'
-        
-        font = self.fonts[size]
+        return self._outlined_cached(str(text), size, tuple(color),
+                                     tuple(outline_color), outline_width).copy()
+
+    @lru_cache(maxsize=128)
+    def _outlined_cached(self, text, size, color, outline_color, outline_width):
+        font = self.fonts.get(size, self.fonts['medium'])
         
         # Render the main text
         text_surface = font.render(str(text), True, color)
@@ -215,18 +216,6 @@ class ArcadeFrame:
         pygame.draw.rect(surface, c.BLACK, (0, 0, 4, height))
         pygame.draw.rect(surface, c.BLACK, (width - 4, 0, 4, height))
         
-        # Corner decorations
-        corner_size = 20
-        # Top-left
-        pygame.draw.circle(surface, c.ORANGE, (corner_size, corner_size), 8)
-        # Top-right
-        pygame.draw.circle(surface, c.ORANGE, (width - corner_size, corner_size), 8)
-        # Bottom-left
-        pygame.draw.circle(surface, c.ORANGE, (corner_size, height - corner_size), 8)
-        # Bottom-right
-        pygame.draw.circle(surface, c.ORANGE, (width - corner_size, height - corner_size), 8)
-
-
 class ScanlineEffect:
     """Creates vintage CRT scanline effect"""
     
@@ -261,16 +250,22 @@ class GradientBackground:
         """
         if rect is None:
             rect = pygame.Rect(0, 0, surface.get_width(), surface.get_height())
-        
-        for y in range(rect.height):
+        background = GradientBackground._vertical(
+            rect.width, rect.height, tuple(color_top), tuple(color_bottom))
+        surface.blit(background, rect.topleft)
+
+    @staticmethod
+    @lru_cache(maxsize=8)
+    def _vertical(width, height, color_top, color_bottom):
+        background = pygame.Surface((width, height))
+        for y in range(height):
             # Linear interpolation between colors
-            ratio = y / rect.height
+            ratio = y / height
             r = int(color_top[0] + (color_bottom[0] - color_top[0]) * ratio)
             g = int(color_top[1] + (color_bottom[1] - color_top[1]) * ratio)
             b = int(color_top[2] + (color_bottom[2] - color_top[2]) * ratio)
-            pygame.draw.line(surface, (r, g, b), 
-                           (rect.x, rect.y + y), 
-                           (rect.x + rect.width, rect.y + y))
+            pygame.draw.line(background, (r, g, b), (0, y), (width, y))
+        return background
     
     @staticmethod
     def draw_radial(surface, center, radius, color_center, color_edge):
@@ -358,11 +353,6 @@ def draw_panel(surface, rect, bg_color, border_color, border_width=3, shadow=Tru
     pygame.draw.rect(surface, bg_color, rect)
     pygame.draw.rect(surface, border_color, rect, border_width)
     
-    # Inner highlight
-    inner_rect = rect.inflate(-10, -10)
-    pygame.draw.rect(surface, c.WHITE, inner_rect, 1)
-
-
 def draw_health_bar(surface, x, y, width, height, ratio, color, show_segments=True):
     """
     Draw a styled health bar.
@@ -375,32 +365,28 @@ def draw_health_bar(surface, x, y, width, height, ratio, color, show_segments=Tr
         color: Bar color
         show_segments: Whether to show segmented style
     """
-    # Background
-    pygame.draw.rect(surface, c.BLACK, (x - 2, y - 2, width + 4, height + 4))
+    ratio = max(0.0, min(1.0, ratio))
     pygame.draw.rect(surface, c.DARK_GRAY, (x, y, width, height))
-    
+    # Reserve the border rather than painting over tiny partial fills.
+    inner_x, inner_y = x + 2, y + 2
+    inner_width, inner_height = width - 4, height - 4
     if show_segments:
         num_segments = 10
         gap = 2
-        segment_width = (width - (num_segments - 1) * gap) / num_segments
-        
+        pixels = inner_width - (num_segments - 1) * gap
         for i in range(num_segments):
-            segment_x = x + i * (segment_width + gap)
-            segment_threshold = (i + 1) / num_segments
-            
-            if ratio >= segment_threshold or ratio > (i / num_segments):
-                # Flash on low health
-                if ratio < 0.3:
-                    flash_color = c.YELLOW if pygame.time.get_ticks() % 500 < 250 else color
-                else:
-                    flash_color = color
-                pygame.draw.rect(surface, flash_color, (segment_x, y, segment_width, height))
+            start = round(i * pixels / num_segments) + i * gap
+            end = round((i + 1) * pixels / num_segments) + i * gap
+            fraction = max(0.0, min(1.0, ratio * num_segments - i))
+            filled = round((end - start) * fraction)
+            if filled:
+                pygame.draw.rect(surface, color,
+                                 (inner_x + start, inner_y, filled, inner_height))
     else:
-        # Simple bar
-        filled_width = int(width * ratio)
+        filled_width = round(inner_width * ratio)
         if filled_width > 0:
-            pygame.draw.rect(surface, color, (x, y, filled_width, height))
+            pygame.draw.rect(surface, color,
+                             (inner_x, inner_y, filled_width, inner_height))
     
     # Border
     pygame.draw.rect(surface, c.WHITE, (x, y, width, height), 2)
-

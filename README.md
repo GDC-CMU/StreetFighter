@@ -26,6 +26,22 @@ A vintage arcade-style fighting game featuring four unique professor characters,
 
 ## 🎮 Controls
 
+### Menus and character select
+
+- **Main menu:** Up/Down or W/S (arcade stick/D-pad) chooses one item;
+  **Start / Enter** selects it. Mouse motion takes focus and a click selects.
+- **Controls / About:** **Start / Enter** returns to the main menu.
+- **Character select:** each player's stick/D-pad chooses a fighter and
+  **Start** locks that player's choice. Keyboard P1 uses **A/D + J or Enter**;
+  P2 uses **Left/Right + Numpad 1 or Numpad Enter**. Both players must lock in.
+- **Results:** **Start / Enter** returns to the main menu.
+- **Esc / P1 (Button 5)** goes back one level, exiting only from the main menu.
+  From a fight it ends that match and returns to character select, not pause.
+- Existing aliases remain: A/B confirm menu choices, Space selects on the
+  main menu, and X backs out of the main menu, Controls and About screens.
+
+**During a fight, B is light punch and Start is parry, not menu controls.**
+
 ### Keyboard Controls
 
 #### Player 1
@@ -63,6 +79,9 @@ A vintage arcade-style fighting game featuring four unique professor characters,
 | Dash | Select (Button 8) |
 | Parry | Start (Button 9) |
 | **BACK** | **P1 (Button 5)** |
+
+When the **SUPER** meter is full, Special + Heavy Punch activates the existing
+ultimate move (Insert + A on arcade, U + K for P1, Numpad 0 + 2 for P2).
 
 **Note:** The P1 button (Button 5) always goes back one level: it ends the current fight and returns to character select while fighting, returns to the main menu from any other screen, and exits the game only from the main menu (mirrored by Esc on keyboard).
 

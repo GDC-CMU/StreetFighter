@@ -26,7 +26,8 @@ import os
 import config as c
 from entities import Fighter, Particle, SpinningKickEffect, HitEffect, Projectile
 from ui_components import (Button, VintageTextRenderer, ArcadeFrame, ScanlineEffect,
-                           GradientBackground, draw_panel, draw_health_bar)
+                           GradientBackground, draw_panel, draw_health_bar,
+                           MENU_TOP, MENU_BOTTOM, PANEL, MUTED, RULE, P2_ACCENT)
 from combat import CombatSystem
 import drawing
 import joystick
@@ -128,13 +129,14 @@ class Game:
         # Menu title
         self.menu_title = "CMUQ ARENA"
         self.menu_subtitle = "VINTAGE ARCADE FIGHTER"
+        self.ui_input = "joystick" if joystick.get_joystick_count() else "keyboard"
         
         # Create menu buttons (centered vertically)
         button_width = 300
-        button_height = 60
+        button_height = 56
         button_x = c.SCREEN_WIDTH // 2 - button_width // 2
-        start_y = 280
-        gap = 80
+        start_y = 266
+        gap = 76
         
         self.menu_buttons = [
             Button(button_x, start_y, button_width, button_height, "START", c.ORANGE),
@@ -147,15 +149,17 @@ class Game:
         """Initialize controls screen UI"""
         # Back button
         self.controls_back_button = Button(
-            c.SCREEN_WIDTH // 2 - 150, 500, 300, 60, "BACK", c.ORANGE
+            c.SCREEN_WIDTH // 2 - 150, 494, 300, 52, "BACK", c.ORANGE
         )
+        self.controls_back_button.selected = True
         
     def _init_about_screen(self):
         """Initialize about screen UI"""
         # Back button
         self.about_back_button = Button(
-            c.SCREEN_WIDTH // 2 - 150, 500, 300, 60, "BACK", c.ORANGE
+            c.SCREEN_WIDTH // 2 - 150, 494, 300, 52, "BACK", c.ORANGE
         )
+        self.about_back_button.selected = True
         
     def _init_character_select(self):
         """Initialize character selection screen"""
@@ -164,6 +168,13 @@ class Game:
         self.p1_selected = False
         self.p2_selected = False
         self.p2_coin_inserted = True  # Instant 2-player mode - no coin required
+        self.character_portraits = []
+        # Static menu portraits reuse the existing drawings, at native size.
+        for draw_character in (drawing.draw_khalid, drawing.draw_eduardo,
+                               drawing.draw_hasan, drawing.draw_hammoud):
+            portrait = pygame.Surface((156, 148), pygame.SRCALPHA)
+            draw_character(portrait, 78, 76, True, 'idle', 0)
+            self.character_portraits.append(portrait)
         
     def _init_fight_screen(self):
         """Initialize fight screen variables"""
@@ -221,6 +232,10 @@ class Game:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         mouse_clicked = True
+                        self._focus_menu_pointer(event.pos)
+
+                if event.type == pygame.MOUSEMOTION and event.rel != (0, 0):
+                    self._focus_menu_pointer(event.pos)
                         
                 if event.type == pygame.KEYDOWN:
                     self.keys_down.add(event.key)
@@ -304,6 +319,7 @@ class Game:
         Args:
             key: Pygame key constant
         """
+        self.ui_input = "keyboard"
         # Global: ESC mirrors the P1 arcade button - back one level,
         # or exit the process entirely from the main menu.
         if key == pygame.K_ESCAPE:
@@ -318,6 +334,10 @@ class Game:
             elif key == pygame.K_RETURN or key == pygame.K_SPACE:
                 self._activate_menu_button(self.menu_selected)
                 
+        elif self.state in ("CONTROLS", "ABOUT"):
+            if key == pygame.K_RETURN:
+                self.state = "MAIN_MENU"
+
         # Character select keyboard controls
         elif self.state == "CHARACTER_SELECT":
             # P1 controls
@@ -326,7 +346,7 @@ class Game:
                     self.p1_cursor = (self.p1_cursor - 1) % len(c.CHARACTERS)
                 elif key == pygame.K_d:
                     self.p1_cursor = (self.p1_cursor + 1) % len(c.CHARACTERS)
-                elif key == pygame.K_j:
+                elif key in (pygame.K_j, pygame.K_RETURN):
                     self.p1_selected = True
             
             # P2 controls - always available
@@ -335,7 +355,7 @@ class Game:
                     self.p2_cursor = (self.p2_cursor - 1) % len(c.CHARACTERS)
                 elif key == pygame.K_RIGHT:
                     self.p2_cursor = (self.p2_cursor + 1) % len(c.CHARACTERS)
-                elif key == pygame.K_KP1:
+                elif key in (pygame.K_KP1, pygame.K_KP_ENTER):
                     self.p2_selected = True
                     
         # Game over screen
@@ -408,6 +428,7 @@ class Game:
             button: String representing the button (e.g., '0', '1', 'H0')
             joystick_id: ID of the joystick that triggered the event
         """
+        self.ui_input = "joystick"
         # BACK BUTTON - P1 button (5) on any joystick backs out one level of
         # the state machine (see _go_back). This event only fires on the
         # JOYBUTTONDOWN edge, so a held button cannot re-trigger it.
@@ -485,6 +506,8 @@ class Game:
             results: List of (axis, direction) tuples for active movements
             joystick_id: ID of the joystick
         """
+        if results:
+            self.ui_input = "joystick"
         # Update tracked state - ALWAYS update to current active movements
         # Empty list means all axes are at neutral
         if joystick_id in self.joy_input_state:
@@ -555,7 +578,7 @@ class Game:
                     self.p1_cursor = (self.p1_cursor - 1) % len(c.CHARACTERS)
                 elif button == 'H1':  # Right
                     self.p1_cursor = (self.p1_cursor + 1) % len(c.CHARACTERS)
-                elif button in ['0', '1']:  # b or a to select
+                elif button in ['0', '1', '9']:  # Menu-only confirm aliases
                     self.p1_selected = True
         elif joystick_id == 1:  # Player 2
             if not self.p2_selected:
@@ -563,7 +586,7 @@ class Game:
                     self.p2_cursor = (self.p2_cursor - 1) % len(c.CHARACTERS)
                 elif button == 'H1':  # Right
                     self.p2_cursor = (self.p2_cursor + 1) % len(c.CHARACTERS)
-                elif button in ['0', '1']:  # b or a to select
+                elif button in ['0', '1', '9']:  # Menu-only confirm aliases
                     self.p2_selected = True
     
     def get_joy_action(self, action, joystick_id=0):
@@ -618,6 +641,34 @@ class Game:
         return False
     
     # ==================== MAIN MENU STATE ====================
+
+    def _focus_menu_pointer(self, position):
+        """Only real pointer motion/clicks take focus from keyboard or stick."""
+        self.ui_input = "mouse"
+        if self.state == "MAIN_MENU":
+            for i, button in enumerate(self.menu_buttons):
+                if button.rect.collidepoint(position):
+                    self.menu_selected = i
+                    break
+
+    def _center_text(self, text, y, size='small', color=c.WHITE, center=None):
+        text_surface = self.text_renderer.render(text, size, color)
+        center = c.SCREEN_WIDTH // 2 if center is None else center
+        self.screen.blit(text_surface, (center - text_surface.get_width() // 2, y))
+
+    def _menu_heading(self, text):
+        GradientBackground.draw_vertical(self.screen, MENU_TOP, MENU_BOTTOM)
+        self._center_text(text, 36, 'large', c.ORANGE)
+        pygame.draw.line(self.screen, RULE, (40, 112), (760, 112))
+
+    def _menu_hint(self, keyboard, arcade, mouse=None):
+        if self.ui_input == "joystick":
+            text = arcade
+        elif self.ui_input == "mouse" and mouse:
+            text = mouse
+        else:
+            text = keyboard
+        self._center_text(text, 558, color=MUTED)
     
     def _update_main_menu(self, mouse_pos, mouse_clicked):
         """
@@ -664,6 +715,8 @@ class Game:
             
             # Check for button clicks
             if button.is_clicked(mouse_pos, mouse_clicked):
+                self.menu_selected = i
+                self.ui_input = "mouse"
                 self._activate_menu_button(i)
     
     def _activate_menu_button(self, index):
@@ -712,41 +765,17 @@ class Game:
     
     def _draw_main_menu(self):
         """Render main menu screen with vintage arcade styling"""
-        # Draw gradient background for polish
-        GradientBackground.draw_vertical(self.screen, (20, 20, 40), (5, 5, 15))
-        
-        # Title section with background panel
-        title = self.text_renderer.render_outlined(self.menu_title, 'large', c.ORANGE, c.BLACK, 3)
-        title_x = c.SCREEN_WIDTH // 2 - title.get_width() // 2
-        title_y = 80
-        
-        # Title background panel with enhanced styling
-        title_panel = pygame.Rect(title_x - 40, title_y - 20, title.get_width() + 80, title.get_height() + 40)
-        draw_panel(self.screen, title_panel, (30, 30, 50), c.ORANGE, 4, shadow=True)
-        
-        self.screen.blit(title, (title_x, title_y))
-        
-        # Subtitle with outline for better visibility
-        subtitle = self.text_renderer.render_outlined(self.menu_subtitle, 'medium', c.WHITE, c.BLACK, 2)
-        subtitle_x = c.SCREEN_WIDTH // 2 - subtitle.get_width() // 2
-        self.screen.blit(subtitle, (subtitle_x, 170))
-        
-        # Draw all menu buttons
-        for button in self.menu_buttons:
+        GradientBackground.draw_vertical(self.screen, MENU_TOP, MENU_BOTTOM)
+        self._center_text(self.menu_title, 76, 'xlarge', c.ORANGE)
+        self._center_text(self.menu_subtitle, 170, 'medium')
+        pygame.draw.line(self.screen, RULE, (100, 226), (700, 226))
+
+        for i, button in enumerate(self.menu_buttons):
+            button.selected = i == self.menu_selected
             button.draw(self.screen, self.text_renderer)
-        
-        # Decorative line
-        pygame.draw.line(self.screen, c.ORANGE, (100, 230), (c.SCREEN_WIDTH - 100, 230), 2)
-        pygame.draw.line(self.screen, c.ORANGE, (100, 520), (c.SCREEN_WIDTH - 100, 520), 2)
-        
-        # Footer text
-        footer = self.text_renderer.render("USE ARROW KEYS OR MOUSE  |  JOYSTICK SUPPORTED", 'small', c.GRAY)
-        footer_x = c.SCREEN_WIDTH // 2 - footer.get_width() // 2
-        self.screen.blit(footer, (footer_x, 545))
-        
-        # Version info
-        version = self.text_renderer.render("v1.0", 'small', c.DARK_GRAY)
-        self.screen.blit(version, (c.SCREEN_WIDTH - version.get_width() - 10, c.SCREEN_HEIGHT - 25))
+        self._menu_hint("UP/DOWN: CHOOSE  |  ENTER: SELECT  |  ESC: EXIT",
+                        "STICK: CHOOSE  |  START: SELECT  |  P1: EXIT",
+                        "CLICK: SELECT  |  ESC: EXIT")
     
     # ==================== CONTROLS SCREEN STATE ====================
     
@@ -759,110 +788,37 @@ class Game:
     
     def _draw_controls(self):
         """Render controls screen with keyboard and arcade box controls"""
-        # Title
-        title = self.text_renderer.render("GAME CONTROLS", 'large', c.ORANGE)
-        title_x = c.SCREEN_WIDTH // 2 - title.get_width() // 2
-        self.screen.blit(title, (title_x, 30))
-        
-        # Controls panel
-        panel_rect = pygame.Rect(20, 80, c.SCREEN_WIDTH - 40, 400)
-        pygame.draw.rect(self.screen, c.BLACK, panel_rect)
-        pygame.draw.rect(self.screen, c.ORANGE, panel_rect, 3)
-        
-        # ===== KEYBOARD CONTROLS =====
-        kbd_title = self.text_renderer.render("KEYBOARD", 'medium', c.GREEN)
-        self.screen.blit(kbd_title, (40, 90))
-        
-        # Player 1 keyboard
-        y_offset = 115
-        p1_title = self.text_renderer.render("P1:", 'small', c.RED)
-        self.screen.blit(p1_title, (40, y_offset))
-        
-        y_offset += 18
-        controls_p1 = [
-            ("MOVE: W/A/S/D", "PUNCH: J/K"),
-            ("KICK: L/I", "SPECIAL: U"),
-            ("DASH: LSHIFT", "PARRY: O"),
-        ]
-        
-        for left, right in controls_p1:
-            left_surf = self.text_renderer.render(left, 'small', c.WHITE)
-            right_surf = self.text_renderer.render(right, 'small', c.WHITE)
-            self.screen.blit(left_surf, (40, y_offset))
-            self.screen.blit(right_surf, (200, y_offset))
-            y_offset += 16
-        
-        # Player 2 keyboard
-        y_offset += 8
-        p2_title = self.text_renderer.render("P2:", 'small', c.BLUE)
-        self.screen.blit(p2_title, (40, y_offset))
-        
-        y_offset += 18
-        controls_p2 = [
-            ("MOVE: ARROWS", "PUNCH: NUM1/2"),
-            ("KICK: NUM3/4", "SPECIAL: NUM0"),
-            ("DASH: RSHIFT", "PARRY: NUM5"),
-        ]
-        
-        for left, right in controls_p2:
-            left_surf = self.text_renderer.render(left, 'small', c.WHITE)
-            right_surf = self.text_renderer.render(right, 'small', c.WHITE)
-            self.screen.blit(left_surf, (40, y_offset))
-            self.screen.blit(right_surf, (200, y_offset))
-            y_offset += 16
-        
-        # ===== ARCADE BOX CONTROLS =====
-        arcade_title = self.text_renderer.render("ARCADE BOX", 'medium', c.GREEN)
-        self.screen.blit(arcade_title, (420, 90))
-        
-        y_offset = 115
-        arcade_info = [
-            ("JOYSTICK: MOVE", ""),
-            ("B BUTTON: LIGHT PUNCH", ""),
-            ("A BUTTON: HEAVY PUNCH", ""),
-            ("X BUTTON: LIGHT KICK", ""),
-            ("Y BUTTON: HEAVY KICK", ""),
-            ("INSERT: SPECIAL MOVE", ""),
-            ("SELECT: DASH", ""),
-            ("START: PARRY", ""),
-            ("", ""),
-            ("P1 BUTTON: BACK", "(EXIT AT MENU)"),
-        ]
-        
-        for label, note in arcade_info:
-            if label:
-                label_surf = self.text_renderer.render(label, 'small', c.WHITE)
-                self.screen.blit(label_surf, (420, y_offset))
-            if note:
-                note_surf = self.text_renderer.render(note, 'small', c.RED)
-                self.screen.blit(note_surf, (620, y_offset))
-            y_offset += 16
-        
-        # ===== GENERAL INFO =====
-        info_y = 340
-        pygame.draw.line(self.screen, c.ORANGE, (30, info_y), (c.SCREEN_WIDTH - 30, info_y), 2)
-        
-        info_y += 10
-        info_lines = [
-            "BLOCK: HOLD DOWN TO BLOCK ATTACKS",
-            "ESC / P1: BACK ONE SCREEN (EXIT AT MAIN MENU)",
-            "SUPPORTS PS4/PS5 AND SWITCH CONTROLLERS",
-        ]
-        
-        for line in info_lines:
-            info_surf = self.text_renderer.render(line, 'small', c.YELLOW)
-            self.screen.blit(info_surf, (40, info_y))
-            info_y += 18
-        
-        # Joystick status
-        joy_count = joystick.get_joystick_count()
-        status_text = f"JOYSTICKS CONNECTED: {joy_count}"
-        status_color = c.GREEN if joy_count > 0 else c.GRAY
-        status_surf = self.text_renderer.render(status_text, 'small', status_color)
-        self.screen.blit(status_surf, (420, info_y - 18))
-        
-        # Back button
+        self._menu_heading("GAME CONTROLS")
+        columns = (40, 280, 480, 620)
+        headers = ("IN FIGHT", "ARCADE", "P1 KEYS", "P2 KEYS")
+        for x, label in zip(columns, headers):
+            self.screen.blit(self.text_renderer.render(label, 'small', c.ORANGE), (x, 124))
+
+        rows = (
+            ("Move / jump", "Stick", "W/A/S/D", "Arrows"),
+            ("Light punch", "B", "J", "Num 1"),
+            ("Heavy punch", "A", "K", "Num 2"),
+            ("Light kick", "X", "L", "Num 3"),
+            ("Heavy kick", "Y", "I", "Num 4"),
+            ("Special", "Insert", "U", "Num 0"),
+            ("Dash", "Select", "L Shift", "R Shift"),
+            ("Parry", "Start", "O", "Num 5"),
+        )
+        for i, row in enumerate(rows):
+            y = 156 + i * 28
+            for x, label in zip(columns, row):
+                self.screen.blit(self.text_renderer.render(label, 'small', c.WHITE), (x, y))
+        pygame.draw.line(self.screen, RULE, (40, 384), (760, 384))
+        for i, line in enumerate((
+                "BLOCK: HOLD DOWN",
+                "SUPER: SPECIAL + HEAVY PUNCH WHEN METER IS FULL",
+                "ESC / P1: FIGHT TO SELECT; EXIT AT MAIN MENU")):
+            self.screen.blit(self.text_renderer.render(line, 'small', MUTED),
+                             (40, 394 + i * 28))
         self.controls_back_button.draw(self.screen, self.text_renderer)
+        self._menu_hint("ENTER: MAIN MENU  |  ESC: BACK",
+                        "START: MAIN MENU  |  P1: BACK",
+                        "CLICK BACK: MAIN MENU  |  ESC: BACK")
     
     # ==================== ABOUT SCREEN STATE ====================
     
@@ -875,36 +831,17 @@ class Game:
     
     def _draw_about(self):
         """Render about screen"""
-        # Title
-        title = self.text_renderer.render("ABOUT CMUQ ARENA", 'large', c.ORANGE)
-        title_x = c.SCREEN_WIDTH // 2 - title.get_width() // 2
-        self.screen.blit(title, (title_x, 50))
-        
-        # Info panel
-        panel_rect = pygame.Rect(100, 150, c.SCREEN_WIDTH - 200, 320)
-        pygame.draw.rect(self.screen, c.BLACK, panel_rect)
-        pygame.draw.rect(self.screen, c.ORANGE, panel_rect, 3)
-        
-        # Game information
-        y_offset = 180
-        info_lines = [
-            "CMUQ ARENA",
-            "ULTIMATE FIGHTING CHAMPIONSHIP",
-            "",
-            "Made by Game Dev Club with Love",
-            "Yousef Hussein - Class of 2029",
-            "Version 1.0 - Tarnival 2026"
-        ]
-        
-        for i, line in enumerate(info_lines):
-            color = c.ORANGE if i < 2 else c.WHITE
-            size = 'medium' if i < 2 else 'small'
-            text = self.text_renderer.render(line, size, color)
-            text_x = c.SCREEN_WIDTH // 2 - text.get_width() // 2
-            self.screen.blit(text, (text_x, y_offset + i * 25))
-        
-        # Back button
+        self._menu_heading("ABOUT CMUQ ARENA")
+        self._center_text("CMUQ ARENA", 158, 'medium', c.ORANGE)
+        self._center_text("ULTIMATE FIGHTING CHAMPIONSHIP", 200, 'small', c.ORANGE)
+        self._center_text("Made by Game Dev Club with Love", 272)
+        self._center_text("Yousef Hussein - Class of 2029", 308)
+        self._center_text("Version 1.0 - Tarnival 2026", 344)
+        self._center_text("SUPPORTS PS4/PS5 AND SWITCH CONTROLLERS", 416, color=MUTED)
         self.about_back_button.draw(self.screen, self.text_renderer)
+        self._menu_hint("ENTER: MAIN MENU  |  ESC: BACK",
+                        "START: MAIN MENU  |  P1: BACK",
+                        "CLICK BACK: MAIN MENU  |  ESC: BACK")
     
     # ==================== CHARACTER SELECT STATE ====================
     
@@ -916,93 +853,46 @@ class Game:
             self._start_fight()
     
     def _draw_character_select(self):
-        """Render character selection screen with perfect alignment"""
-        # Draw gradient background
-        GradientBackground.draw_vertical(self.screen, (30, 15, 40), (10, 5, 20))
-        
-        # Title with outline
-        title = self.text_renderer.render_outlined("CHOOSE YOUR FIGHTER", 'large', c.WHITE, c.BLACK, 3)
-        title_x = c.SCREEN_WIDTH // 2 - title.get_width() // 2
-        title_bg = pygame.Rect(title_x - 30, 35, title.get_width() + 60, 70)
-        draw_panel(self.screen, title_bg, (40, 20, 50), c.ORANGE, 4)
-        self.screen.blit(title, (title_x, 50))
-        
-        # Character grid - perfectly centered
-        num_chars = len(c.CHARACTERS)
-        box_width = 120
-        box_height = 140
-        gap = 30
-        total_width = num_chars * box_width + (num_chars - 1) * gap
-        start_x = (c.SCREEN_WIDTH - total_width) // 2
-        start_y = 180
-        
+        """Fixed roster slots and separate P1/P2 markers, even on mirror picks."""
+        self._menu_heading("CHOOSE YOUR FIGHTER")
         for i, char in enumerate(c.CHARACTERS):
-            x = start_x + i * (box_width + gap)
-            y = start_y
-            
-            # Character box with shadow and gradient effect
-            char_rect = pygame.Rect(x, y, box_width, box_height)
-            draw_panel(self.screen, char_rect, (50, 50, 60), c.WHITE, 3)
-            
-            # Inner gradient for depth
-            inner_rect = pygame.Rect(x + 5, y + 5, box_width - 10, box_height - 10)
-            GradientBackground.draw_vertical(self.screen, (60, 60, 70), (30, 30, 40), inner_rect)
-            
-            # Draw character portrait (head only, centered in box)
-            portrait_x = x + box_width // 2
-            portrait_y = y + box_height // 2
-            char_name = char['name']
-            if 'KHALID' in char_name:
-                drawing.draw_khalid(self.screen, portrait_x, portrait_y + 30, True, 'idle', 0)
-            elif 'EDUARDO' in char_name:
-                drawing.draw_eduardo(self.screen, portrait_x, portrait_y + 30, True, 'idle', 0)
-            elif 'HASAN' in char_name:
-                drawing.draw_hasan(self.screen, portrait_x, portrait_y + 30, True, 'idle', 0)
-            elif 'HAMMOUD' in char_name:
-                drawing.draw_hammoud(self.screen, portrait_x, portrait_y + 30, True, 'idle', 0)
-            
-            # Character name - centered with outline
-            name = self.text_renderer.render_outlined(char['name'], 'small', c.WHITE, c.BLACK, 1)
-            name_x = x + box_width // 2 - name.get_width() // 2
-            self.screen.blit(name, (name_x, y + box_height + 8))
-            
-            # P1 selection indicator
-            if i == self.p1_cursor:
-                color = c.YELLOW if self.p1_selected else c.RED
-                pygame.draw.rect(self.screen, color, char_rect.inflate(10, 10), 5)
-                
-                p1_label = self.text_renderer.render("P1", 'small', c.RED)
-                label_x = x + box_width // 2 - p1_label.get_width() // 2
-                self.screen.blit(p1_label, (label_x, y - 30))
-                
-                if self.p1_selected:
-                    ready = self.text_renderer.render("READY!", 'small', c.YELLOW)
-                    ready_x = x + box_width // 2 - ready.get_width() // 2
-                    self.screen.blit(ready, (ready_x, y + box_height + 60))
-            
-            # P2 selection indicator
-            if i == self.p2_cursor:
-                # Calculate offset if P1 and P2 are selecting the same character
-                offset = 6 if i == self.p1_cursor else 0
-                
-                # P2 human player indicator
-                color = c.YELLOW if self.p2_selected else c.BLUE
-                pygame.draw.rect(self.screen, color, char_rect.inflate(10 + offset * 2, 10 + offset * 2), 5)
-                
-                p2_label = self.text_renderer.render("P2", 'small', c.BLUE)
-                label_x = x + box_width // 2 - p2_label.get_width() // 2
-                y_pos = y + box_height + 78 if i == self.p1_cursor else y + box_height + 60
-                self.screen.blit(p2_label, (label_x, y_pos))
-                
-                if self.p2_selected:
-                        ready = self.text_renderer.render("READY!", 'small', c.YELLOW)
-                        ready_x = x + box_width // 2 - ready.get_width() // 2
-                        self.screen.blit(ready, (ready_x, y_pos + 18))
-        
-        # 2 Player mode indicator not used
-        # mode_text = self.text_renderer.render("2 PLAYER MODE", 'medium', c.GREEN)
-        # mode_x = c.SCREEN_WIDTH // 2 - mode_text.get_width() // 2
-        # self.screen.blit(mode_text, (mode_x, 50))
+            x = 52 + i * 180
+            rect = pygame.Rect(x, 184, 156, 148)
+            active = i in (self.p1_cursor, self.p2_cursor)
+            draw_panel(self.screen, rect, PANEL, c.ORANGE if active else RULE,
+                       border_width=1, shadow=False)
+            self.screen.blit(self.character_portraits[i], rect.topleft)
+            self._center_text(char['name'], 340, center=rect.centerx)
+
+            for player, cursor, locked, y, color in (
+                    ("P1", self.p1_cursor, self.p1_selected, 150, c.RED),
+                    ("P2", self.p2_cursor, self.p2_selected, 378, P2_ACCENT)):
+                if cursor == i:
+                    label = f"{player}: {'LOCKED' if locked else 'SELECT'}"
+                    self._center_text(label, y, color=c.YELLOW if locked else color,
+                                      center=rect.centerx)
+                    pygame.draw.line(self.screen, color, (x, y + 26),
+                                     (x + rect.width, y + 26), 2)
+
+        pygame.draw.line(self.screen, RULE, (40, 424), (760, 424))
+        for player, cursor, locked, other_locked, center, color in (
+                ("P1", self.p1_cursor, self.p1_selected, self.p2_selected, 220, c.RED),
+                ("P2", self.p2_cursor, self.p2_selected, self.p1_selected, 580, P2_ACCENT)):
+            self._center_text(f"{player}: {c.CHARACTERS[cursor]['name']}",
+                              438, 'medium', color, center)
+            if locked:
+                waiting = "READY" if other_locked else f"WAITING FOR {'P2' if player == 'P1' else 'P1'}"
+                self._center_text(f"LOCKED - {waiting}", 486, color=c.YELLOW, center=center)
+            else:
+                if self.ui_input == "joystick":
+                    move, confirm = "STICK: CHOOSE", "START: LOCK IN"
+                elif player == "P1":
+                    move, confirm = "A/D: CHOOSE", "J / ENTER: LOCK IN"
+                else:
+                    move, confirm = "LEFT/RIGHT: CHOOSE", "NUM 1 / NUM ENTER: LOCK IN"
+                self._center_text(move, 486, color=MUTED, center=center)
+                self._center_text(confirm, 516, center=center)
+        self._menu_hint("ESC: MAIN MENU", "P1: MAIN MENU")
     
     # ==================== FIGHT STATE ====================
     
@@ -1571,161 +1461,63 @@ class Game:
     
     def _draw_fight_hud(self):
         """Draw vintage arcade-style HUD with segmented health bars"""
-        bar_width = 300
-        bar_height = 30
-        num_segments = 10
-        segment_width = (bar_width - (num_segments - 1) * 2) / num_segments  # 2px gap between segments
-        
-        # P1 health bar (segmented)
-        ratio_p1 = max(0, self.p1.health / self.p1.max_health)
-        pygame.draw.rect(self.screen, c.BLACK, (18, 18, bar_width + 4, bar_height + 4))
-        pygame.draw.rect(self.screen, c.DARK_GRAY, (20, 20, bar_width, bar_height))
-        
-        # Draw segments
-        for i in range(num_segments):
-            segment_x = 20 + i * (segment_width + 2)
-            segment_health = (i + 1) / num_segments
-            
-            if ratio_p1 >= segment_health:
-                # Full segment
-                color = c.RED
-            elif ratio_p1 > (i / num_segments):
-                # Partial segment
-                color = c.RED
-            else:
-                # Empty segment (already dark gray background)
-                continue
-            
-            # Flash on low health
-            if ratio_p1 < 0.3 and pygame.time.get_ticks() % 500 < 250:
-                color = c.YELLOW
-            
-            pygame.draw.rect(self.screen, color, (segment_x, 20, segment_width, bar_height))
-        
-        pygame.draw.rect(self.screen, c.WHITE, (20, 20, bar_width, bar_height), 3)
-        
-        # P2 health bar (segmented)
-        ratio_p2 = max(0, self.p2.health / self.p2.max_health)
-        p2_x = c.SCREEN_WIDTH - 20 - bar_width
-        pygame.draw.rect(self.screen, c.BLACK, (p2_x - 2, 18, bar_width + 4, bar_height + 4))
-        pygame.draw.rect(self.screen, c.DARK_GRAY, (p2_x, 20, bar_width, bar_height))
-        
-        # Draw segments
-        for i in range(num_segments):
-            segment_x = p2_x + i * (segment_width + 2)
-            segment_health = (i + 1) / num_segments
-            
-            if ratio_p2 >= segment_health:
-                color = c.BLUE
-            elif ratio_p2 > (i / num_segments):
-                color = c.BLUE
-            else:
-                continue
-            
-            # Flash on low health
-            if ratio_p2 < 0.3 and pygame.time.get_ticks() % 500 < 250:
-                color = c.YELLOW
-            
-            pygame.draw.rect(self.screen, color, (segment_x, 20, segment_width, bar_height))
-        
-        pygame.draw.rect(self.screen, c.WHITE, (p2_x, 20, bar_width, bar_height), 3)
-        
-        # Player names
-        p1_name = self.text_renderer.render(self.p1.stats['name'], 'medium', c.WHITE)
-        self.screen.blit(p1_name, (25, 55))
-        
-        p2_name = self.text_renderer.render(self.p2.stats['name'], 'medium', c.WHITE)
-        self.screen.blit(p2_name, (p2_x, 55))
-        
-        # P1 Special ability power bar
-        power_bar_width = 150
-        power_bar_height = 15
+        pygame.draw.rect(self.screen, MENU_BOTTOM, (0, 0, c.SCREEN_WIDTH, 120))
         current_time = pygame.time.get_ticks()
-        time_since_special_p1 = current_time - self.p1.last_special_time
-        special_cooldown = 2000  # 2 seconds
-        power_ratio_p1 = min(1.0, time_since_special_p1 / special_cooldown)
-        
-        pygame.draw.rect(self.screen, c.BLACK, (18, 78, power_bar_width + 4, power_bar_height + 4))
-        pygame.draw.rect(self.screen, c.DARK_GRAY, (20, 80, power_bar_width, power_bar_height))
-        if power_ratio_p1 > 0:
-            filled_width = int(power_bar_width * power_ratio_p1)
-            color = c.YELLOW if power_ratio_p1 >= 1.0 else c.ORANGE
-            pygame.draw.rect(self.screen, color, (20, 80, filled_width, power_bar_height))
-        pygame.draw.rect(self.screen, c.WHITE, (20, 80, power_bar_width, power_bar_height), 2)
-        
-        # P2 Special ability power bar
-        time_since_special_p2 = current_time - self.p2.last_special_time
-        power_ratio_p2 = min(1.0, time_since_special_p2 / special_cooldown)
-        
-        p2_power_x = c.SCREEN_WIDTH - 20 - power_bar_width
-        pygame.draw.rect(self.screen, c.BLACK, (p2_power_x - 2, 78, power_bar_width + 4, power_bar_height + 4))
-        pygame.draw.rect(self.screen, c.DARK_GRAY, (p2_power_x, 80, power_bar_width, power_bar_height))
-        if power_ratio_p2 > 0:
-            filled_width = int(power_bar_width * power_ratio_p2)
-            color = c.YELLOW if power_ratio_p2 >= 1.0 else c.ORANGE
-            pygame.draw.rect(self.screen, color, (p2_power_x, 80, filled_width, power_bar_height))
-        pygame.draw.rect(self.screen, c.WHITE, (p2_power_x, 80, power_bar_width, power_bar_height), 2)
-        
-        # Timer
+        for player, fighter, x, color in (("P1", self.p1, 20, c.RED),
+                                          ("P2", self.p2, 480, c.BLUE)):
+            name = self.text_renderer.render(f"{player} {fighter.stats['name']}", 'small', c.WHITE)
+            self.screen.blit(name, (x, 12))
+            ratio = fighter.health / fighter.max_health
+            draw_health_bar(self.screen, x, 44, 300, 24, ratio, color)
+
+            # Display the existing Fighter.attack special gate (4000ms),
+            # not the move's shorter recovery. No cooldown/state is changed.
+            elapsed = current_time - fighter.last_special_time
+            power_ratio = max(0.0, min(1.0, elapsed / 4000))
+            ready = power_ratio >= 1.0
+            status = "READY" if ready else f"{max(0, 4000 - elapsed) / 1000:.1f}s"
+            label = self.text_renderer.render("SPECIAL", 'small', MUTED)
+            self.screen.blit(label, (x, 78))
+            status_text = self.text_renderer.render(status, 'small', c.YELLOW if ready else c.WHITE)
+            self.screen.blit(status_text, (x + 300 - status_text.get_width(), 78))
+            draw_health_bar(self.screen, x, 106, 300, 10, power_ratio,
+                            c.YELLOW if ready else c.ORANGE, show_segments=False)
+
         t_color = c.WHITE if self.round_timer > 10 else c.RED
-        timer = self.text_renderer.render(str(self.round_timer), 'large', t_color)
-        timer_x = c.SCREEN_WIDTH // 2 - timer.get_width() // 2
-        timer_bg = pygame.Rect(timer_x - 15, 8, timer.get_width() + 30, timer.get_height() + 10)
-        pygame.draw.rect(self.screen, c.BLACK, timer_bg)
-        pygame.draw.rect(self.screen, c.ORANGE, timer_bg, 3)
-        self.screen.blit(timer, (timer_x, 10))
-        
-        # Draw combo counters
+        pygame.draw.rect(self.screen, c.ORANGE, (344, 10, 112, 64), 1)
+        self._center_text(str(max(0, self.round_timer)), 8, 'large', t_color)
+        self._center_text(f"ROUND {self.current_round}", 82, color=MUTED)
+
+        # Keep the existing combat-system update in _draw_combo_display at
+        # the same point in the render cycle; this is presentation-only work.
         self._draw_combo_display()
-        
-        # Draw round wins indicators
         self._draw_round_wins()
-        
-        # Draw super meter bars
         self._draw_super_meters()
-        
-        # FIGHT! text at start or round number
-        if self.round_timer > 96:
-            # Show round number first, then FIGHT!
+
+        # The existing 99/98/97 windows are unchanged, with no new delay.
+        if self.round_timer > 96 and not self.round_over and self.state == "FIGHT":
             if self.round_timer > 97:
-                round_text = self.text_renderer.render_outlined(f"ROUND {self.current_round}", 'large', c.WHITE, c.BLACK, 3)
-                round_x = c.SCREEN_WIDTH // 2 - round_text.get_width() // 2
-                round_bg = pygame.Rect(round_x - 20, c.SCREEN_HEIGHT // 2 - 50, 
-                                      round_text.get_width() + 40, 90)
-                pygame.draw.rect(self.screen, c.BLACK, round_bg)
-                pygame.draw.rect(self.screen, c.ORANGE, round_bg, 5)
-                self.screen.blit(round_text, (round_x, c.SCREEN_HEIGHT // 2 - 30))
+                self._round_banner(f"ROUND {self.current_round}",
+                                   f"FIRST TO {c.WINS_REQUIRED} ROUNDS", c.WHITE)
             else:
-                fight_text = self.text_renderer.render_outlined("FIGHT!", 'large', c.YELLOW, c.BLACK, 3)
-                fight_x = c.SCREEN_WIDTH // 2 - fight_text.get_width() // 2
-                fight_bg = pygame.Rect(fight_x - 20, c.SCREEN_HEIGHT // 2 - 50, 
-                                      fight_text.get_width() + 40, 90)
-                pygame.draw.rect(self.screen, c.BLACK, fight_bg)
-                pygame.draw.rect(self.screen, c.ORANGE, fight_bg, 5)
-                self.screen.blit(fight_text, (fight_x, c.SCREEN_HEIGHT // 2 - 30))
-        
-        # Draw round over transition
-        if self.round_over:
+                self._round_banner("FIGHT!", "", c.YELLOW)
+
+        if self.round_over and self.state == "FIGHT":
             self._draw_round_transition()
-        
-        # Draw attract mode banner
+
         if self.attract_mode:
-            banner = self.text_renderer.render_outlined("DEMO - PRESS ANY BUTTON TO PLAY", 'medium', c.YELLOW, c.BLACK, 2)
+            banner = self.text_renderer.render_outlined("DEMO - PRESS ANY BUTTON TO PLAY", 'small', c.YELLOW, c.BLACK, 2)
             banner_x = c.SCREEN_WIDTH // 2 - banner.get_width() // 2
-            # Pulsing effect
-            pulse = abs((pygame.time.get_ticks() % 1000) - 500) / 500.0
-            alpha = int(128 + 127 * pulse)
-            banner.set_alpha(alpha)
-            self.screen.blit(banner, (banner_x, c.SCREEN_HEIGHT - 50))
+            self.screen.blit(banner, (banner_x, 502))
     
     def _draw_round_wins(self):
         """Draw round win indicators (circles/gems)"""
         gem_radius = 8
-        gem_y = 58
+        gem_y = 24
         
         # P1 wins (left side)
         for i in range(c.WINS_REQUIRED):
-            gem_x = 180 + i * 25
+            gem_x = 280 + i * 26
             if i < self.p1_wins:
                 # Won round - filled yellow
                 pygame.draw.circle(self.screen, c.YELLOW, (gem_x, gem_y), gem_radius)
@@ -1735,9 +1527,9 @@ class Game:
             pygame.draw.circle(self.screen, c.WHITE, (gem_x, gem_y), gem_radius, 2)
         
         # P2 wins (right side)
-        p2_start_x = c.SCREEN_WIDTH - 180 - (c.WINS_REQUIRED - 1) * 25
+        p2_start_x = 740
         for i in range(c.WINS_REQUIRED):
-            gem_x = p2_start_x + i * 25
+            gem_x = p2_start_x + i * 26
             if i < self.p2_wins:
                 # Won round - filled yellow
                 pygame.draw.circle(self.screen, c.YELLOW, (gem_x, gem_y), gem_radius)
@@ -1748,55 +1540,27 @@ class Game:
     
     def _draw_super_meters(self):
         """Draw super meter bars at bottom of screen"""
-        meter_width = 250
-        meter_height = 20
-        meter_y = c.SCREEN_HEIGHT - 40
-        
-        # P1 super meter (bottom left)
-        p1_meter = getattr(self.p1, 'super_meter', 0)
-        p1_ratio = min(1.0, p1_meter / c.SUPER_METER_MAX)
-        
-        pygame.draw.rect(self.screen, c.BLACK, (18, meter_y - 2, meter_width + 4, meter_height + 4))
-        pygame.draw.rect(self.screen, c.DARK_GRAY, (20, meter_y, meter_width, meter_height))
-        
-        if p1_ratio > 0:
-            # Gradient color from blue to yellow when full
-            if p1_ratio >= 1.0:
-                color = c.YELLOW
-                # Pulsing effect when full
-                pulse = abs((pygame.time.get_ticks() % 500) - 250) / 250.0
-                color = (int(255 * pulse), int(255 * pulse), 0)
-            else:
-                color = c.PURPLE
-            pygame.draw.rect(self.screen, color, (20, meter_y, int(meter_width * p1_ratio), meter_height))
-        
-        pygame.draw.rect(self.screen, c.WHITE, (20, meter_y, meter_width, meter_height), 2)
-        
-        # Super label
-        super_label = self.text_renderer.render("SUPER", 'small', c.WHITE)
-        self.screen.blit(super_label, (22, meter_y - 15))
-        
-        # P2 super meter (bottom right)
-        p2_meter = getattr(self.p2, 'super_meter', 0)
-        p2_ratio = min(1.0, p2_meter / c.SUPER_METER_MAX)
-        p2_x = c.SCREEN_WIDTH - 20 - meter_width
-        
-        pygame.draw.rect(self.screen, c.BLACK, (p2_x - 2, meter_y - 2, meter_width + 4, meter_height + 4))
-        pygame.draw.rect(self.screen, c.DARK_GRAY, (p2_x, meter_y, meter_width, meter_height))
-        
-        if p2_ratio > 0:
-            if p2_ratio >= 1.0:
-                pulse = abs((pygame.time.get_ticks() % 500) - 250) / 250.0
-                color = (int(255 * pulse), int(255 * pulse), 0)
-            else:
-                color = c.PURPLE
-            pygame.draw.rect(self.screen, color, (p2_x, meter_y, int(meter_width * p2_ratio), meter_height))
-        
-        pygame.draw.rect(self.screen, c.WHITE, (p2_x, meter_y, meter_width, meter_height), 2)
-        
-        super_label2 = self.text_renderer.render("SUPER", 'small', c.WHITE)
-        self.screen.blit(super_label2, (p2_x + 2, meter_y - 15))
-    
+        for fighter, x in ((self.p1, 20), (self.p2, 500)):
+            ratio = max(0.0, min(1.0, fighter.super_meter / c.SUPER_METER_MAX))
+            ready = ratio >= 1.0
+            pygame.draw.rect(self.screen, MENU_BOTTOM, (x - 4, 534, 288, 46))
+            label = "SUPER READY" if ready else "SUPER"
+            text = self.text_renderer.render(label, 'small', c.YELLOW if ready else c.WHITE)
+            self.screen.blit(text, (x, 536))
+            # Full remains visibly full; no pulsing down to black.
+            draw_health_bar(self.screen, x, 564, 280, 14, ratio,
+                            c.YELLOW if ready else c.PURPLE, show_segments=False)
+
+    def _round_banner(self, title, detail, color):
+        """One quiet, centered stage shared by the existing round windows."""
+        ribbon = pygame.Surface((c.SCREEN_WIDTH, 126), pygame.SRCALPHA)
+        ribbon.fill((5, 5, 15, 210))
+        self.screen.blit(ribbon, (0, 238))
+        pygame.draw.line(self.screen, c.ORANGE, (280, 238), (520, 238), 2)
+        self._center_text(title, 250, 'large', color)
+        if detail:
+            self._center_text(detail, 324, color=MUTED)
+
     def _draw_round_transition(self):
         """Draw round over transition screen"""
         # Semi-transparent overlay
@@ -1805,33 +1569,27 @@ class Game:
         overlay.fill((0, 0, 0))
         self.screen.blit(overlay, (0, 0))
         
-        # K.O. text
+        # Same 60-frame KO window, including an accurate timeout label.
         if self.round_transition_timer < 60:
-            ko_text = self.text_renderer.render_outlined("K.O.!", 'large', c.RED, c.BLACK, 4)
-            ko_x = c.SCREEN_WIDTH // 2 - ko_text.get_width() // 2
-            self.screen.blit(ko_text, (ko_x, c.SCREEN_HEIGHT // 2 - 60))
-        
-        # Round winner text
-        if self.round_transition_timer >= 60:
+            if self.p1.health <= 0 and self.p2.health <= 0:
+                title = "DOUBLE K.O.!"
+            elif self.p1.health > 0 and self.p2.health > 0:
+                title = "TIME UP"
+            else:
+                title = "K.O.!"
+            self._round_banner(title, f"ROUND {self.current_round}", c.ORANGE)
+        else:
             if self.round_winner == "p1":
-                winner_text = f"{self.p1.stats['name']} WINS ROUND {self.current_round}!"
+                winner_text = f"P1 {self.p1.stats['name']} WINS!"
                 color = c.RED
             elif self.round_winner == "p2":
-                winner_text = f"{self.p2.stats['name']} WINS ROUND {self.current_round}!"
-                color = c.BLUE
+                winner_text = f"P2 {self.p2.stats['name']} WINS!"
+                color = P2_ACCENT
             else:
-                winner_text = "DOUBLE K.O!"
+                winner_text = "ROUND DRAW"
                 color = c.YELLOW
-            
-            text_surf = self.text_renderer.render_outlined(winner_text, 'medium', color, c.BLACK, 3)
-            text_x = c.SCREEN_WIDTH // 2 - text_surf.get_width() // 2
-            self.screen.blit(text_surf, (text_x, c.SCREEN_HEIGHT // 2 - 20))
-            
-            # Show win counts
-            wins_text = f"P1: {self.p1_wins}  -  P2: {self.p2_wins}"
-            wins_surf = self.text_renderer.render(wins_text, 'medium', c.WHITE)
-            wins_x = c.SCREEN_WIDTH // 2 - wins_surf.get_width() // 2
-            self.screen.blit(wins_surf, (wins_x, c.SCREEN_HEIGHT // 2 + 40))
+            detail = f"ROUND {self.current_round}  |  P1 {self.p1_wins} - {self.p2_wins} P2"
+            self._round_banner(winner_text, detail, color)
     
     def _draw_combo_display(self):
         """Draw combo counter and announcements"""
@@ -1839,56 +1597,59 @@ class Game:
         
         # Update combat system to check for dropped combos
         self.combat_system.update(current_time)
+
+        # Retain that update even behind results, but do not stack old fight
+        # announcements under the match winner's title.
+        if self.state == "GAME_OVER":
+            return
         
         # Draw P1 combo counter
         p1_combo = self.combat_system.get_combo_count("p1")
         if p1_combo >= 2:
             combo_text = self.text_renderer.render_outlined(f"{p1_combo} HITS", 'medium', c.YELLOW, c.BLACK, 2)
-            self.screen.blit(combo_text, (20, 110))
+            self.screen.blit(combo_text, (20, 130))
         
         # Draw P2 combo counter
         p2_combo = self.combat_system.get_combo_count("p2")
         if p2_combo >= 2:
             combo_text = self.text_renderer.render_outlined(f"{p2_combo} HITS", 'medium', c.YELLOW, c.BLACK, 2)
-            self.screen.blit(combo_text, (c.SCREEN_WIDTH - combo_text.get_width() - 20, 110))
+            self.screen.blit(combo_text, (c.SCREEN_WIDTH - combo_text.get_width() - 20, 130))
         
-        # Draw counter attack indicator (flashing "COUNTER!" text)
+        # Keep the existing counter window, without rapidly flashing the cue.
         if self.counter_attack_window['p1'] > 0:
-            flash = (pygame.time.get_ticks() // 100) % 2 == 0
-            if flash:
-                counter_text = self.text_renderer.render_outlined("COUNTER!", 'small', c.GREEN, c.BLACK, 1)
-                self.screen.blit(counter_text, (20, 140))
+            counter_text = self.text_renderer.render_outlined("COUNTER!", 'small', c.GREEN, c.BLACK, 1)
+            self.screen.blit(counter_text, (20, 168))
         
         if self.counter_attack_window['p2'] > 0:
-            flash = (pygame.time.get_ticks() // 100) % 2 == 0
-            if flash:
-                counter_text = self.text_renderer.render_outlined("COUNTER!", 'small', c.GREEN, c.BLACK, 1)
-                self.screen.blit(counter_text, (c.SCREEN_WIDTH - counter_text.get_width() - 20, 140))
+            counter_text = self.text_renderer.render_outlined("COUNTER!", 'small', c.GREEN, c.BLACK, 1)
+            self.screen.blit(counter_text, (c.SCREEN_WIDTH - counter_text.get_width() - 20, 168))
         
         # Draw combo announcements
-        announcements = self.combat_system.get_announcements()
-        for announcement in announcements:
+        # Latest message per player, in separate lanes. The underlying combo
+        # history/lifetime is untouched; simultaneous messages no longer stack.
+        latest = {}
+        for announcement in self.combat_system.get_announcements():
+            latest[announcement['fighter_id']] = announcement
+        for announcement in latest.values():
             age = current_time - announcement['time']
             if age < 2000:  # Show for 2 seconds
                 # Calculate animation
                 alpha = int(255 * (1 - age / 2000))
-                scale = 1.0 + (age / 2000) * 0.3  # Grow slightly over time
-                y_offset = int(age / 50)  # Float upward
                 
                 text = announcement['text']
                 is_p1 = announcement['fighter_id'] == "p1"
-                color = c.RED if is_p1 else c.BLUE
+                color = c.RED if is_p1 else P2_ACCENT
                 
                 # Render announcement text
-                ann_text = self.text_renderer.render_outlined(text, 'medium', color, c.BLACK, 2)
+                ann_text = self.text_renderer.render_outlined(text, 'small', color, c.BLACK, 1)
                 
                 # Position based on which player
                 if is_p1:
-                    x = 100
+                    x = 20
                 else:
-                    x = c.SCREEN_WIDTH - ann_text.get_width() - 100
+                    x = c.SCREEN_WIDTH - ann_text.get_width() - 20
                 
-                y = 200 - y_offset
+                y = 202
                 
                 # Apply fade
                 ann_text.set_alpha(alpha)
@@ -1901,7 +1662,7 @@ class Game:
         pass
     
     def _draw_game_over(self):
-        """Render game over screen with enhanced styling"""
+        """Match result with stable spacing, preserving the existing backdrop."""
         # Draw faded fight background
         self._draw_fight()
         
@@ -1912,47 +1673,28 @@ class Game:
         self.screen.blit(overlay, (0, 0))
         
         # Determine winner
-        if self.p1.health > self.p2.health:
-            winner_text = f"{self.p1.stats['name']} WINS!"
+        if self.p1_wins > self.p2_wins:
+            winner_text = f"P1 {self.p1.stats['name']} WINS!"
             color = c.RED
-        elif self.p2.health > self.p1.health:
-            winner_text = f"{self.p2.stats['name']} WINS!"
-            color = c.BLUE
+        elif self.p2_wins > self.p1_wins:
+            winner_text = f"P2 {self.p2.stats['name']} WINS!"
+            color = P2_ACCENT
         else:
-            winner_text = "DOUBLE K.O!"
+            winner_text = "MATCH DRAW"
             color = c.YELLOW
         
-        # Winner announcement with outlined text
-        winner = self.text_renderer.render_outlined(winner_text, 'large', color, c.BLACK, 4)
-        winner_x = c.SCREEN_WIDTH // 2 - winner.get_width() // 2
-        winner_bg = pygame.Rect(winner_x - 30, 150, winner.get_width() + 60, 90)
-        draw_panel(self.screen, winner_bg, (20, 20, 30), color, 5)
-        self.screen.blit(winner, (winner_x, 170))
-        
-        # Subtitle with outline
-        subtitle = self.text_renderer.render_outlined("GAME OVER", 'medium', c.WHITE, c.BLACK, 2)
-        subtitle_x = c.SCREEN_WIDTH // 2 - subtitle.get_width() // 2
-        self.screen.blit(subtitle, (subtitle_x, 280))
-        
-        # Stats display
-        stats_y = 330
-        p1_stats = self.text_renderer.render(f"P1: {int(max(0, self.p1.health))} HP", 'small', c.RED)
-        p2_stats = self.text_renderer.render(f"P2: {int(max(0, self.p2.health))} HP", 'small', c.BLUE)
-        self.screen.blit(p1_stats, (c.SCREEN_WIDTH // 2 - 100, stats_y))
-        self.screen.blit(p2_stats, (c.SCREEN_WIDTH // 2 + 30, stats_y))
-        
-        # Restart prompt (pulsing effect)
-        pulse = abs((pygame.time.get_ticks() % 1000) - 500) / 500.0
-        alpha = int(128 + 127 * pulse)
-        prompt = self.text_renderer.render_outlined("PRESS ENTER TO CONTINUE", 'medium', c.YELLOW, c.BLACK, 2)
-        prompt.set_alpha(alpha)
-        prompt_x = c.SCREEN_WIDTH // 2 - prompt.get_width() // 2
-        self.screen.blit(prompt, (prompt_x, 400))
-        
-        # ESC to exit hint
-        esc_hint = self.text_renderer.render("ESC to return to menu", 'small', c.GRAY)
-        esc_x = c.SCREEN_WIDTH // 2 - esc_hint.get_width() // 2
-        self.screen.blit(esc_hint, (esc_x, 450))
+        self._center_text(winner_text, 154, 'large', color)
+        self._center_text("GAME OVER", 236, 'medium')
+        pygame.draw.line(self.screen, RULE, (160, 292), (640, 292))
+        self._center_text(f"ROUNDS   P1 {self.p1_wins} - {self.p2_wins} P2",
+                          312, 'medium')
+        for player, fighter, center in (("P1", self.p1, 220), ("P2", self.p2, 580)):
+            self._center_text(f"{player} {fighter.stats['name']}", 368, center=center)
+            self._center_text(f"{int(max(0, fighter.health))} HP", 400,
+                              color=MUTED, center=center)
+        prompt = "START: MAIN MENU" if self.ui_input == "joystick" else "ENTER: MAIN MENU"
+        self._center_text(prompt, 470, 'medium', c.YELLOW)
+        self._menu_hint("ESC: MAIN MENU", "P1: MAIN MENU")
     
     # ==================== HELPER METHODS ====================
     
