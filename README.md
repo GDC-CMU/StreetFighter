@@ -34,13 +34,24 @@ A vintage arcade-style fighting game featuring four unique professor characters,
 - **Character select:** each player's stick/D-pad chooses a fighter and
   **Start** locks that player's choice. Keyboard P1 uses **A/D + J or Enter**;
   P2 uses **Left/Right + Numpad 1 or Numpad Enter**. Both players must lock in.
-- **Results:** **Start / Enter** returns to the main menu.
+  The brief **MATCH READY** transition remains responsive to Back. Held menu
+  inputs must be released before they can become combat actions.
+- **Results:** Up/Down or W/S (either arcade stick/D-pad) chooses **Rematch**,
+  **Change Fighters**, or **Main Menu**; **Start / Enter** selects. Mouse clicks
+  also work. Rematch keeps both fighter choices and starts a completely fresh
+  match. Change Fighters keeps the cursors but unlocks both choices.
 - **Esc / P1 (Button 5)** goes back one level, exiting only from the main menu.
   From a fight it ends that match and returns to character select, not pause.
 - Existing aliases remain: A/B confirm menu choices, Space selects on the
   main menu, and X backs out of the main menu, Controls and About screens.
 
 **During a fight, B is light punch and Start is parry, not menu controls.**
+
+Hits, blocked contacts and successful parries have separate, short visual
+cues, triggered by resolved contacts rather than lingering hitbox overlap.
+Special recovery has a one-time READY accent at its existing four-second gate.
+Health, timer and meters stay anchored through impact and round announcements.
+Combat rules, character drawings and audio levels are unchanged.
 
 ### Keyboard Controls
 
@@ -119,10 +130,19 @@ To regenerate it after changing character art, the HUD, or stage art:
 python tools/generate_preview.py
 ```
 
+For a local review without replacing the repository's derived preview, pass
+`--output` with a review directory:
+
+```
+python tools/generate_preview.py --output path/to/review-preview
+```
+
 This runs the real game headlessly (no window needed) and captures a short
 AI-vs-AI demo fight, the same one the game itself shows after 15 seconds of
 idle. It's deterministic - re-running it without changing the game's visuals
 reproduces byte-identical files, so `git status` stays clean.
+Rendering and cosmetic effects use cached resources/separate randomness, so
+capturing extra frames no longer affects the AI's random decisions.
 
 ## 🎓 Credits
 

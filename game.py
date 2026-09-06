@@ -24,11 +24,12 @@ import sys
 import random
 import os
 import config as c
-from entities import Fighter, Particle, SpinningKickEffect, HitEffect, Projectile
+from entities import Particle, SpinningKickEffect, HitEffect
 from ui_components import (Button, VintageTextRenderer, ArcadeFrame, ScanlineEffect,
                            GradientBackground, draw_panel, draw_health_bar,
                            MENU_TOP, MENU_BOTTOM, PANEL, MUTED, RULE, P2_ACCENT)
 from combat import CombatSystem
+from presentation import PresentedFighter, ContactEffect, idle_portrait, veil
 import drawing
 import joystick
 
@@ -86,6 +87,9 @@ class Game:
         # attract-mode/idle-timer checks don't depend on any(get_pressed()),
         # which some arcade-box pygame builds don't support reliably)
         self.keys_down = set()
+        self.blocked_keys = set()
+        self.blocked_buttons = {0: set(), 1: set()}
+        self.blocked_axes = {0: set(), 1: set()}
         
         # Debouncing for menu/character select joystick scrolling (prevent too-fast scrolling)
         self.joy_menu_scroll_cooldown = 0
@@ -110,8 +114,26 @@ class Game:
         # Counter attack window (frames after successful parry where attacks do bonus damage)
         self.counter_attack_window = {'p1': 0, 'p2': 0}
         
-        # Set random seed for consistent ground texture
+        # Retain the gameplay seed; presentation has a separate stream.
         random.seed(42)
+        # Cosmetic choices never advance the AI's RNG, including in draw.
+        self.cosmetic_rng = random.Random(42)
+        self.floor_texture = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT - c.FLOOR_Y))
+        self.floor_texture.fill(c.DIRT_BROWN)
+        texture_rng = random.Random(42)
+        for _ in range(50):
+            x = texture_rng.randint(0, c.SCREEN_WIDTH)
+            y = texture_rng.randint(0, c.SCREEN_HEIGHT - c.FLOOR_Y)
+            radius = texture_rng.randint(3, 8)
+            pygame.draw.circle(self.floor_texture, tuple(int(v * .8) for v in c.DIRT_BROWN),
+                               (x, y), radius)
+        self.object_surface = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT), pygame.SRCALPHA)
+        self.result_backdrop = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT))
+        drawing.draw_parallax_background(self.result_backdrop, 200, 550, 0)
+        self.result_backdrop.blit(self.floor_texture, (0, c.FLOOR_Y))
+        self.feedback = []
+        self.ready_since = {'p1': None, 'p2': None}
+        self.special_ready = {'p1': True, 'p2': True}
         
         # Game state management
         self.state = "MAIN_MENU"  # Current game state
@@ -123,6 +145,12 @@ class Game:
         self._init_about_screen()
         self._init_character_select()
         self._init_fight_screen()
+        self.result_selected = 0
+        self.result_buttons = [
+            Button(250, 304 + i * 72, 300, 56, label, color)
+            for i, (label, color) in enumerate((
+                ("REMATCH", c.ORANGE), ("CHANGE FIGHTERS", c.BLUE), ("MAIN MENU", c.GREEN)))
+        ]
         
     def _init_main_menu(self):
         """Initialize main menu UI elements"""
@@ -168,13 +196,7 @@ class Game:
         self.p1_selected = False
         self.p2_selected = False
         self.p2_coin_inserted = True  # Instant 2-player mode - no coin required
-        self.character_portraits = []
-        # Static menu portraits reuse the existing drawings, at native size.
-        for draw_character in (drawing.draw_khalid, drawing.draw_eduardo,
-                               drawing.draw_hasan, drawing.draw_hammoud):
-            portrait = pygame.Surface((156, 148), pygame.SRCALPHA)
-            draw_character(portrait, 78, 76, True, 'idle', 0)
-            self.character_portraits.append(portrait)
+        self.selection_started = None
         
     def _init_fight_screen(self):
         """Initialize fight screen variables"""
@@ -232,17 +254,20 @@ class Game:
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         mouse_clicked = True
+                        mouse_pos = event.pos
                         self._focus_menu_pointer(event.pos)
 
                 if event.type == pygame.MOUSEMOTION and event.rel != (0, 0):
                     self._focus_menu_pointer(event.pos)
                         
                 if event.type == pygame.KEYDOWN:
-                    self.keys_down.add(event.key)
-                    self._handle_keypress(event.key)
+                    if event.key not in self.keys_down:
+                        self.keys_down.add(event.key)
+                        self._handle_keypress(event.key)
                 
                 if event.type == pygame.KEYUP:
                     self.keys_down.discard(event.key)
+                    self.blocked_keys.discard(event.key)
                 
                 # Handle joystick events
                 joystick.handle_event(event)
@@ -265,6 +290,9 @@ class Game:
                         if self.joy_input_state[joystick_id]['axis']:
                             print(f"[CLEANUP] Joy {joystick_id} axes cleared (were: {self.joy_input_state[joystick_id]['axis']})")
                             self.joy_input_state[joystick_id]['axis'].clear()
+            # Poll cleanup must release guards in this frame, before a stick
+            # can be pressed in the same direction on the next frame.
+            self._release_input_guards()
             
             # Decrement joystick menu scroll cooldown
             if self.joy_menu_scroll_cooldown > 0:
@@ -276,27 +304,34 @@ class Game:
             # ===== STATE-BASED UPDATE AND RENDERING =====
             if self.state == "MAIN_MENU":
                 self._update_main_menu(mouse_pos, mouse_clicked)
-                self._draw_main_menu()
                 
             elif self.state == "CONTROLS":
                 self._update_controls(mouse_pos, mouse_clicked)
-                self._draw_controls()
                 
             elif self.state == "ABOUT":
                 self._update_about(mouse_pos, mouse_clicked)
-                self._draw_about()
                 
             elif self.state == "CHARACTER_SELECT":
                 self._update_character_select(mouse_pos, mouse_clicked)
-                self._draw_character_select()
                 
             elif self.state == "FIGHT":
                 self._update_fight()
-                self._draw_fight()
                 
             elif self.state == "GAME_OVER":
                 self._update_game_over(mouse_pos, mouse_clicked)
-                self._draw_game_over()
+
+            # A mouse action can change state during update (including tearing
+            # down fighters). Draw the destination, not the departed screen.
+            if self.state in ("FIGHT", "GAME_OVER"):
+                self._finish_fight_frame()
+            {
+                "MAIN_MENU": self._draw_main_menu,
+                "CONTROLS": self._draw_controls,
+                "ABOUT": self._draw_about,
+                "CHARACTER_SELECT": self._draw_character_select,
+                "FIGHT": self._draw_fight,
+                "GAME_OVER": self._draw_game_over,
+            }[self.state]()
             
             # ===== VINTAGE ARCADE EFFECTS =====
             ArcadeFrame.draw(self.screen)
@@ -320,10 +355,13 @@ class Game:
             key: Pygame key constant
         """
         self.ui_input = "keyboard"
+        if key in self.blocked_keys:
+            return
         # Global: ESC mirrors the P1 arcade button - back one level,
         # or exit the process entirely from the main menu.
         if key == pygame.K_ESCAPE:
             self._go_back()
+            return
                 
         # Main menu keyboard navigation
         if self.state == "MAIN_MENU":
@@ -360,14 +398,12 @@ class Game:
                     
         # Game over screen
         elif self.state == "GAME_OVER":
-            if key == pygame.K_RETURN:
-                # Reset character selection for next game
-                self.p1_selected = False
-                self.p2_selected = False
-                self.p1_cursor = 0
-                self.p2_cursor = 0
-                self.p2_coin_inserted = True  # Keep 2-player mode enabled
-                self.state = "MAIN_MENU"
+            if key in (pygame.K_UP, pygame.K_w):
+                self.result_selected = (self.result_selected - 1) % len(self.result_buttons)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.result_selected = (self.result_selected + 1) % len(self.result_buttons)
+            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._activate_result()
     
     # ==================== UNIVERSAL BACK / EXIT ACTION ====================
     
@@ -392,6 +428,8 @@ class Game:
         and the launcher regain control, so it must always call sys.exit(0)
         and must never be changed to anything else.
         """
+        self._consume_held_inputs()
+        self.selection_started = None
         if self.state == "MAIN_MENU":
             print("Back button pressed at main menu - exiting game")
             joystick.quit()
@@ -429,16 +467,19 @@ class Game:
             joystick_id: ID of the joystick that triggered the event
         """
         self.ui_input = "joystick"
+        if joystick_id in self.joy_input_state:
+            buttons = self.joy_input_state[joystick_id]['buttons']
+            if button in buttons:
+                return  # Repeated down events are not a second menu action.
+            buttons.add(button)
+        if button in self.blocked_buttons.get(joystick_id, ()):
+            return
         # BACK BUTTON - P1 button (5) on any joystick backs out one level of
         # the state machine (see _go_back). This event only fires on the
         # JOYBUTTONDOWN edge, so a held button cannot re-trigger it.
         if button == c.ARCADE_RESET_BUTTON:
             self._go_back()
             return
-        
-        # Track button state
-        if joystick_id in self.joy_input_state:
-            self.joy_input_state[joystick_id]['buttons'].add(button)
         
         # Handle menu/character select navigation
         if self.state == "MAIN_MENU":
@@ -462,14 +503,12 @@ class Game:
         elif self.state == "CHARACTER_SELECT":
             self._handle_joy_character_select(button, joystick_id)
         elif self.state == "GAME_OVER":
-            # Any button to continue
+            if button == 'H0':
+                self.result_selected = (self.result_selected - 1) % len(self.result_buttons)
+            elif button == 'H2':
+                self.result_selected = (self.result_selected + 1) % len(self.result_buttons)
             if button in ['0', '1', '9']:
-                self.p1_selected = False
-                self.p2_selected = False
-                self.p1_cursor = 0
-                self.p2_cursor = 0
-                self.p2_coin_inserted = True
-                self.state = "MAIN_MENU"
+                self._activate_result()
     
     def _on_joy_release(self, button, joystick_id):
         """
@@ -482,6 +521,7 @@ class Game:
         # Remove from tracked state
         if joystick_id in self.joy_input_state:
             self.joy_input_state[joystick_id]['buttons'].discard(button)
+            self.blocked_buttons[joystick_id].discard(button)
     
     def _on_joy_button_hold(self, buttons, joystick_id):
         """
@@ -517,11 +557,14 @@ class Game:
             
             # Update the state
             self.joy_input_state[joystick_id]['axis'] = new_axis_state
+            self.blocked_axes[joystick_id].intersection_update(new_axis_state)
             
             # Debug: Log axis state changes
             if new_axis_state != old_axis_state:
                 print(f"[Joy {joystick_id}] Axis changed: {old_axis_state} -> {new_axis_state} (results={results})")
         
+        results = [value for value in results
+                   if value not in self.blocked_axes.get(joystick_id, ())]
         # Handle menu/character select navigation WITH DEBOUNCING
         # Only process menu scrolling every 8 frames to prevent too-fast scrolling
         if self.state == "MAIN_MENU":
@@ -535,6 +578,12 @@ class Game:
                             self.menu_selected = (self.menu_selected + 1) % len(self.menu_buttons)
                             self.joy_menu_scroll_cooldown = 8  # 8 frame cooldown
         
+        elif self.state == "GAME_OVER":
+            if self.joy_menu_scroll_cooldown <= 0:
+                for axis, direction in results:
+                    if axis == 1:
+                        self.result_selected = (self.result_selected + direction) % len(self.result_buttons)
+                        self.joy_menu_scroll_cooldown = 8
         elif self.state == "CHARACTER_SELECT":
             # Determine which player based on joystick_id
             if joystick_id == 0 and self.joy_char_select_cooldown[0] <= 0:  # Player 1
@@ -617,14 +666,14 @@ class Game:
         # Check button actions
         if action in button_map:
             button = button_map[action]
-            if button in state['buttons']:
+            if button in state['buttons'] and button not in self.blocked_buttons[joystick_id]:
                 return True
         
         # Check axis actions (movement)
         if action in axis_map:
             axis, direction = axis_map[action]
             axis_tuple = (axis, direction)
-            in_axis_state = axis_tuple in state['axis']
+            in_axis_state = axis_tuple in state['axis'] and axis_tuple not in self.blocked_axes[joystick_id]
             
             # Debug: log movement checks
             if action in ['left', 'right', 'jump', 'down']:
@@ -635,7 +684,8 @@ class Game:
         
         # Check hat/dpad buttons
         for hat_button, hat_action in c.HAT_BUTTONS.items():
-            if hat_action == action and hat_button in state['buttons']:
+            if (hat_action == action and hat_button in state['buttons']
+                    and hat_button not in self.blocked_buttons[joystick_id]):
                 return True
         
         return False
@@ -645,10 +695,14 @@ class Game:
     def _focus_menu_pointer(self, position):
         """Only real pointer motion/clicks take focus from keyboard or stick."""
         self.ui_input = "mouse"
-        if self.state == "MAIN_MENU":
-            for i, button in enumerate(self.menu_buttons):
+        if self.state in ("MAIN_MENU", "GAME_OVER"):
+            buttons = self.menu_buttons if self.state == "MAIN_MENU" else self.result_buttons
+            for i, button in enumerate(buttons):
                 if button.rect.collidepoint(position):
-                    self.menu_selected = i
+                    if self.state == "MAIN_MENU":
+                        self.menu_selected = i
+                    else:
+                        self.result_selected = i
                     break
 
     def _center_text(self, text, y, size='small', color=c.WHITE, center=None):
@@ -727,6 +781,8 @@ class Game:
             index: Button index (0=START, 1=CONTROLS, 2=ABOUT)
         """
         if index == 0:  # START
+            self._consume_held_inputs()
+            self.selection_started = None
             self.state = "CHARACTER_SELECT"
             self.p1_selected = False
             self.p2_selected = False
@@ -769,6 +825,9 @@ class Game:
         self._center_text(self.menu_title, 76, 'xlarge', c.ORANGE)
         self._center_text(self.menu_subtitle, 170, 'medium')
         pygame.draw.line(self.screen, RULE, (100, 226), (700, 226))
+        phase = (pygame.time.get_ticks() // 80) % 16
+        for index, x, facing in ((self.p1_cursor, 52, True), (self.p2_cursor, 592, False)):
+            self.screen.blit(idle_portrait(index, phase, facing), (x, 294))
 
         for i, button in enumerate(self.menu_buttons):
             button.selected = i == self.menu_selected
@@ -846,11 +905,15 @@ class Game:
     # ==================== CHARACTER SELECT STATE ====================
     
     def _update_character_select(self, mouse_pos, mouse_clicked):
-        """Update character selection logic"""
-        # Check if both players are ready
+        """Present both locked picks for 500 ms without blocking input/events."""
         if self.p1_selected and self.p2_selected:
-            pygame.time.delay(500)
-            self._start_fight()
+            now = pygame.time.get_ticks()
+            if self.selection_started is None:
+                self.selection_started = now
+            elif now - self.selection_started >= 500:
+                self._start_fight()
+        else:
+            self.selection_started = None
     
     def _draw_character_select(self):
         """Fixed roster slots and separate P1/P2 markers, even on mirror picks."""
@@ -861,7 +924,8 @@ class Game:
             active = i in (self.p1_cursor, self.p2_cursor)
             draw_panel(self.screen, rect, PANEL, c.ORANGE if active else RULE,
                        border_width=1, shadow=False)
-            self.screen.blit(self.character_portraits[i], rect.topleft)
+            phase = (pygame.time.get_ticks() // 80) % 16 if active else 0
+            self.screen.blit(idle_portrait(i, phase), rect.topleft)
             self._center_text(char['name'], 340, center=rect.centerx)
 
             for player, cursor, locked, y, color in (
@@ -892,12 +956,20 @@ class Game:
                     move, confirm = "LEFT/RIGHT: CHOOSE", "NUM 1 / NUM ENTER: LOCK IN"
                 self._center_text(move, 486, color=MUTED, center=center)
                 self._center_text(confirm, 516, center=center)
+        if self.selection_started is not None:
+            progress = min(1, (pygame.time.get_ticks() - self.selection_started) / 500)
+            width = int(360 * progress)
+            pygame.draw.line(self.screen, c.YELLOW, (400 - width, 424), (400 + width, 424), 2)
+            self._center_text("MATCH READY", 516, color=c.YELLOW)
         self._menu_hint("ESC: MAIN MENU", "P1: MAIN MENU")
     
     # ==================== FIGHT STATE ====================
     
     def _start_fight(self):
         """Initialize a new fight with selected characters"""
+        self._consume_held_inputs()
+        self._reset_match_presentation()
+        self.combat_system = CombatSystem()
         # Use control configuration from config
         controls_p1 = c.DEFAULT_P1_CONTROLS
         controls_p2 = c.DEFAULT_P2_CONTROLS
@@ -908,10 +980,10 @@ class Game:
         
         # Spawn fighters on the ground (FLOOR_Y - P_HEIGHT)
         spawn_y = c.FLOOR_Y - c.P_HEIGHT
-        self.p1 = Fighter(200, spawn_y, stats_p1, controls_p1, is_p2=False, 
+        self.p1 = self._new_fighter(200, spawn_y, stats_p1, controls_p1, is_p2=False,
                          combat_system=self.combat_system, fighter_id="p1",
                          joy_input_getter=self.get_joy_action)
-        self.p2 = Fighter(550, spawn_y, stats_p2, controls_p2, is_p2=True, 
+        self.p2 = self._new_fighter(550, spawn_y, stats_p2, controls_p2, is_p2=True,
                          combat_system=self.combat_system, fighter_id="p2",
                          joy_input_getter=self.get_joy_action)
         
@@ -952,6 +1024,7 @@ class Game:
         """
         self.p1 = None
         self.p2 = None
+        self._reset_match_presentation()
         self.particles = []
         self.projectiles = []
         self.special_effects = []
@@ -983,6 +1056,8 @@ class Game:
     
     def _start_attract_mode(self):
         """Start AI vs AI attract mode demo - exciting showcase of gameplay!"""
+        self._reset_match_presentation()
+        self.combat_system = CombatSystem()
         self.attract_mode = True
         
         # Select random characters
@@ -999,10 +1074,10 @@ class Game:
         stats_p2 = c.CHARACTERS[self.p2_cursor]
         
         spawn_y = c.FLOOR_Y - c.P_HEIGHT
-        self.p1 = Fighter(200, spawn_y, stats_p1, controls_p1, is_p2=False,
+        self.p1 = self._new_fighter(200, spawn_y, stats_p1, controls_p1, is_p2=False,
                          combat_system=self.combat_system, fighter_id="p1",
                          joy_input_getter=self.get_joy_action)
-        self.p2 = Fighter(550, spawn_y, stats_p2, controls_p2, is_p2=True,
+        self.p2 = self._new_fighter(550, spawn_y, stats_p2, controls_p2, is_p2=True,
                          combat_system=self.combat_system, fighter_id="p2",
                          joy_input_getter=self.get_joy_action)
         
@@ -1034,6 +1109,8 @@ class Game:
     
     def _reset_round(self):
         """Reset positions and health for new round (keep super meter)"""
+        self.feedback.clear()
+        self.ready_since = {'p1': None, 'p2': None}
         spawn_y = c.FLOOR_Y - c.P_HEIGHT
         
         # Store super meter
@@ -1113,7 +1190,7 @@ class Game:
             if self.round_transition_timer >= c.ROUND_TRANSITION_TIME:
                 # Check if match is over
                 if self.p1_wins >= c.WINS_REQUIRED or self.p2_wins >= c.WINS_REQUIRED:
-                    self.state = "GAME_OVER"
+                    self._enter_results()
                 else:
                     # Start next round
                     self._reset_round()
@@ -1191,7 +1268,7 @@ class Game:
                 return  # Skip this update to create slow motion
             
             if self.winner_sequence_frame >= 180:  # Exactly 3 seconds
-                self.state = "GAME_OVER"
+                self._enter_results()
                 self.winner_sequence_active = False
                 self.winner_sequence_frame = 0
             return  # Don't update fight during winner sequence
@@ -1201,8 +1278,8 @@ class Game:
             self.screen_shake -= 1
             shake_amount = min(self.screen_shake, 5)
             self.screen_shake_offset = (
-                random.randint(-shake_amount, shake_amount),
-                random.randint(-shake_amount, shake_amount)
+                self.cosmetic_rng.randint(-shake_amount, shake_amount),
+                self.cosmetic_rng.randint(-shake_amount, shake_amount)
             )
         else:
             self.screen_shake_offset = (0, 0)
@@ -1244,8 +1321,7 @@ class Game:
                     proj.owner = self.p2  # Change ownership to p2
                     self.p2.parry_success = True
                     self.p2.color_flash = 10
-                    self._spawn_particles(self.p2.rect.centerx, self.p2.rect.centery, c.YELLOW)
-                    self.hit_effects.append(HitEffect(self.p2.rect.centerx, self.p2.rect.centery, 'parry', c.YELLOW))
+                    self._contact_feedback(self.p2, 'parry', self.p2.rect.center)
                     # Grant counter attack window (60 frames = 1 second)
                     self.counter_attack_window['p2'] = 60
                     self.hit_freeze_frames = 5  # Brief freeze for impact
@@ -1261,8 +1337,6 @@ class Game:
                         damage *= 1.5  # 50% bonus damage on counter
                     
                     self.p2.take_damage(damage, 10, 15, self.p1.facing_right)
-                    self._spawn_particles(self.p2.rect.centerx, self.p2.rect.centery, c.ORANGE)
-                    self.hit_effects.append(HitEffect(self.p2.rect.centerx, self.p2.rect.centery, 'special', c.ORANGE))
                     self.screen_shake = 8
                     self.hit_freeze_frames = 4  # Brief freeze on heavy hits
                     proj.active = False
@@ -1274,8 +1348,7 @@ class Game:
                     proj.owner = self.p1  # Change ownership to p1
                     self.p1.parry_success = True
                     self.p1.color_flash = 10
-                    self._spawn_particles(self.p1.rect.centerx, self.p1.rect.centery, c.YELLOW)
-                    self.hit_effects.append(HitEffect(self.p1.rect.centerx, self.p1.rect.centery, 'parry', c.YELLOW))
+                    self._contact_feedback(self.p1, 'parry', self.p1.rect.center)
                     # Grant counter attack window (60 frames = 1 second)
                     self.counter_attack_window['p1'] = 60
                     self.hit_freeze_frames = 5  # Brief freeze for impact
@@ -1291,8 +1364,6 @@ class Game:
                         damage *= 1.5  # 50% bonus damage on counter
                     
                     self.p1.take_damage(damage, 10, 15, self.p2.facing_right)
-                    self._spawn_particles(self.p1.rect.centerx, self.p1.rect.centery, c.ORANGE)
-                    self.hit_effects.append(HitEffect(self.p1.rect.centerx, self.p1.rect.centery, 'special', c.ORANGE))
                     self.screen_shake = 8
                     self.hit_freeze_frames = 4  # Brief freeze on heavy hits
                     proj.active = False
@@ -1320,32 +1391,7 @@ class Game:
                     
                     target.take_damage(damage, 15, 10, attacker.facing_right)
                     effect.register_hit()
-                    self._spawn_particles(target.rect.centerx, target.rect.centery, c.ORANGE)
-                    self.hit_effects.append(HitEffect(target.rect.centerx, target.rect.centery, 'heavy', c.ORANGE))
                     self.screen_shake = 10
-        
-        # Spawn particles on hit
-        if self.p1.attacking and self.p1.attack_rect and self.p1.attack_rect.colliderect(self.p2.rect):
-            self._spawn_particles(self.p2.rect.centerx, self.p2.rect.centery, c.RED)
-            # Add hit effect based on attack type with randomness
-            effect_type = 'heavy' if 'heavy' in self.p1.attack_type else 'light'
-            # Higher chance for heavy attacks (80%), lower for light (30%)
-            chance = 0.8 if effect_type == 'heavy' else 0.3
-            if random.random() < chance:
-                # Position text higher to avoid blood splash overlap (move up by 40 pixels)
-                self.hit_effects.append(HitEffect(self.p2.rect.centerx, self.p2.rect.centery - 40, effect_type, c.RED))
-            if effect_type == 'heavy':
-                self.screen_shake = 10
-        if self.p2.attacking and self.p2.attack_rect and self.p2.attack_rect.colliderect(self.p1.rect):
-            self._spawn_particles(self.p1.rect.centerx, self.p1.rect.centery, c.BLUE)
-            effect_type = 'heavy' if 'heavy' in self.p2.attack_type else 'light'
-            # Higher chance for heavy attacks (80%), lower for light (30%)
-            chance = 0.8 if effect_type == 'heavy' else 0.3
-            if random.random() < chance:
-                # Position text higher to avoid blood splash overlap (move up by 40 pixels)
-                self.hit_effects.append(HitEffect(self.p1.rect.centerx, self.p1.rect.centery - 40, effect_type, c.BLUE))
-            if effect_type == 'heavy':
-                self.screen_shake = 10
         
         # Update particles
         for p in self.particles[:]:
@@ -1370,17 +1416,7 @@ class Game:
         # Draw parallax background with CMU-Q pillars
         drawing.draw_parallax_background(self.screen, self.p1.rect.centerx, self.p2.rect.centerx, current_frame)
         
-        # Draw brown dirt floor (no perspective grid)
-        dirt_floor = pygame.Rect(0 + shake_x, c.FLOOR_Y + shake_y, c.SCREEN_WIDTH, c.SCREEN_HEIGHT - c.FLOOR_Y)
-        pygame.draw.rect(self.screen, c.DIRT_BROWN, dirt_floor)
-        
-        # Add subtle texture with random darker spots (using consistent seed from __init__)
-        for _ in range(50):
-            spot_x = random.randint(0, c.SCREEN_WIDTH)
-            spot_y = random.randint(c.FLOOR_Y, c.SCREEN_HEIGHT)
-            spot_size = random.randint(3, 8)
-            darker_brown = (int(c.DIRT_BROWN[0] * 0.8), int(c.DIRT_BROWN[1] * 0.8), int(c.DIRT_BROWN[2] * 0.8))
-            pygame.draw.circle(self.screen, darker_brown, (spot_x + shake_x, spot_y + shake_y), spot_size)
+        self.screen.blit(self.floor_texture, (shake_x, c.FLOOR_Y + shake_y))
         
         # Floor line
         pygame.draw.line(self.screen, (100, 60, 25), (0 + shake_x, c.FLOOR_Y + shake_y), 
@@ -1389,7 +1425,7 @@ class Game:
         # Create shaken surface for game objects
         if self.screen_shake > 0:
             # Draw everything to a temporary surface then blit with offset
-            game_surface = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT), pygame.SRCALPHA)
+            game_surface = self.object_surface
             game_surface.fill((0, 0, 0, 0))
         else:
             game_surface = self.screen
@@ -1409,7 +1445,7 @@ class Game:
             drawing.draw_blood_puddle(game_surface, loser.rect.centerx, c.FLOOR_Y, 80)
             
             # Use epic beatdown animation!
-            result = drawing.draw_victory_beatdown(
+            drawing.draw_victory_beatdown(
                 game_surface,
                 winner.rect.centerx, winner.rect.bottom,
                 loser.rect.centerx, c.FLOOR_Y,
@@ -1418,16 +1454,6 @@ class Game:
                 self.winner_sequence_frame
             )
             
-            # Apply screen shake from beatdown hits
-            if result.get('screen_shake', 0) > 0:
-                self.screen_shake = result['screen_shake']
-            
-            # Flash effect on impact
-            if result.get('flash', False):
-                flash_surface = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT))
-                flash_surface.fill(c.WHITE)
-                flash_surface.set_alpha(100)
-                game_surface.blit(flash_surface, (0, 0))
         else:
             self.p1.draw(game_surface)
             self.p2.draw(game_surface)
@@ -1450,6 +1476,8 @@ class Game:
         
         # Draw hit effects
         for effect in self.hit_effects:
+            effect.draw(game_surface, self.text_renderer)
+        for effect in self.feedback:
             effect.draw(game_surface, self.text_renderer)
         
         # Blit shaken surface if needed
@@ -1482,14 +1510,19 @@ class Game:
             self.screen.blit(status_text, (x + 300 - status_text.get_width(), 78))
             draw_health_bar(self.screen, x, 106, 300, 10, power_ratio,
                             c.YELLOW if ready else c.ORANGE, show_segments=False)
+            since = self.ready_since[fighter.fighter_id]
+            if ready and since is not None and current_time - since < 650:
+                # One edge cue on recovery; the READY label never blinks off.
+                inset = int(12 * min(1, (current_time - since) / 650))
+                pygame.draw.rect(self.screen, c.YELLOW, (x - 2, 76, 304, 42), 1)
+                pygame.draw.line(self.screen, c.WHITE, (x + inset, 111), (x + 298 - inset, 111))
 
         t_color = c.WHITE if self.round_timer > 10 else c.RED
         pygame.draw.rect(self.screen, c.ORANGE, (344, 10, 112, 64), 1)
         self._center_text(str(max(0, self.round_timer)), 8, 'large', t_color)
         self._center_text(f"ROUND {self.current_round}", 82, color=MUTED)
 
-        # Keep the existing combat-system update in _draw_combo_display at
-        # the same point in the render cycle; this is presentation-only work.
+        # Combat housekeeping runs once after update, never from rendering.
         self._draw_combo_display()
         self._draw_round_wins()
         self._draw_super_meters()
@@ -1553,9 +1586,7 @@ class Game:
 
     def _round_banner(self, title, detail, color):
         """One quiet, centered stage shared by the existing round windows."""
-        ribbon = pygame.Surface((c.SCREEN_WIDTH, 126), pygame.SRCALPHA)
-        ribbon.fill((5, 5, 15, 210))
-        self.screen.blit(ribbon, (0, 238))
+        self.screen.blit(veil(c.SCREEN_WIDTH, 126, MENU_BOTTOM, 210), (0, 238))
         pygame.draw.line(self.screen, c.ORANGE, (280, 238), (520, 238), 2)
         self._center_text(title, 250, 'large', color)
         if detail:
@@ -1564,10 +1595,8 @@ class Game:
     def _draw_round_transition(self):
         """Draw round over transition screen"""
         # Semi-transparent overlay
-        overlay = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT))
-        overlay.set_alpha(150)
-        overlay.fill((0, 0, 0))
-        self.screen.blit(overlay, (0, 0))
+        # Keep the HUD fully readable. Only the arena recedes.
+        self.screen.blit(veil(c.SCREEN_WIDTH, 410, c.BLACK, 150), (0, 120))
         
         # Same 60-frame KO window, including an accurate timeout label.
         if self.round_transition_timer < 60:
@@ -1595,11 +1624,7 @@ class Game:
         """Draw combo counter and announcements"""
         current_time = pygame.time.get_ticks()
         
-        # Update combat system to check for dropped combos
-        self.combat_system.update(current_time)
-
-        # Retain that update even behind results, but do not stack old fight
-        # announcements under the match winner's title.
+        # Do not stack old fight announcements under the match winner's title.
         if self.state == "GAME_OVER":
             return
         
@@ -1659,18 +1684,19 @@ class Game:
     
     def _update_game_over(self, mouse_pos, mouse_clicked):
         """Update game over logic"""
-        pass
+        for i, button in enumerate(self.result_buttons):
+            button.update(mouse_pos)
+            if button.is_clicked(mouse_pos, mouse_clicked):
+                self.result_selected = i
+                self._activate_result()
+                return
     
     def _draw_game_over(self):
-        """Match result with stable spacing, preserving the existing backdrop."""
-        # Draw faded fight background
-        self._draw_fight()
+        """Same arena, without stale HUD or contact effects behind the choices."""
+        self.screen.blit(self.result_backdrop, (0, 0))
         
         # Dark overlay with gradient effect
-        overlay = pygame.Surface((c.SCREEN_WIDTH, c.SCREEN_HEIGHT))
-        overlay.set_alpha(180)
-        overlay.fill((10, 10, 20))
-        self.screen.blit(overlay, (0, 0))
+        self.screen.blit(veil(c.SCREEN_WIDTH, c.SCREEN_HEIGHT, MENU_BOTTOM, 225), (0, 0))
         
         # Determine winner
         if self.p1_wins > self.p2_wins:
@@ -1683,27 +1709,117 @@ class Game:
             winner_text = "MATCH DRAW"
             color = c.YELLOW
         
-        self._center_text(winner_text, 154, 'large', color)
-        self._center_text("GAME OVER", 236, 'medium')
-        pygame.draw.line(self.screen, RULE, (160, 292), (640, 292))
+        self._center_text(winner_text, 72, 'large', color)
+        self._center_text("GAME OVER", 150, 'medium')
         self._center_text(f"ROUNDS   P1 {self.p1_wins} - {self.p2_wins} P2",
-                          312, 'medium')
-        for player, fighter, center in (("P1", self.p1, 220), ("P2", self.p2, 580)):
-            self._center_text(f"{player} {fighter.stats['name']}", 368, center=center)
-            self._center_text(f"{int(max(0, fighter.health))} HP", 400,
-                              color=MUTED, center=center)
-        prompt = "START: MAIN MENU" if self.ui_input == "joystick" else "ENTER: MAIN MENU"
-        self._center_text(prompt, 470, 'medium', c.YELLOW)
-        self._menu_hint("ESC: MAIN MENU", "P1: MAIN MENU")
+                          202, 'medium')
+        pygame.draw.line(self.screen, RULE, (40, 266), (760, 266))
+        for player, cursor, center, facing in (("P1", self.p1_cursor, 136, True),
+                                               ("P2", self.p2_cursor, 664, False)):
+            self.screen.blit(idle_portrait(cursor, 0, facing), (center - 78, 300))
+            self._center_text(player, 450, color=c.RED if facing else P2_ACCENT, center=center)
+            self._center_text(c.CHARACTERS[cursor]['name'], 482, center=center)
+        for i, button in enumerate(self.result_buttons):
+            button.selected = i == self.result_selected
+            button.draw(self.screen, self.text_renderer)
+        self._menu_hint("UP/DOWN: CHOOSE  |  ENTER: SELECT  |  ESC: MENU",
+                        "STICK: CHOOSE  |  START: SELECT  |  P1: MENU",
+                        "CLICK: SELECT  |  ESC: MENU")
     
     # ==================== HELPER METHODS ====================
+
+    def _consume_held_inputs(self):
+        """Keep raw device state; mask carried inputs until their own release."""
+        self.blocked_keys.update(self.keys_down)
+        pressed = pygame.key.get_pressed()
+        for key in set(c.DEFAULT_P1_CONTROLS.values()) | set(c.DEFAULT_P2_CONTROLS.values()):
+            if pressed[key]:
+                self.blocked_keys.add(key)
+        for player, state in self.joy_input_state.items():
+            self.blocked_buttons[player].update(state['buttons'])
+            self.blocked_axes[player].update(state['axis'])
+        self.joy_menu_scroll_cooldown = 0
+        self.joy_char_select_cooldown = {0: 0, 1: 0}
+
+    def _release_input_guards(self):
+        pressed = pygame.key.get_pressed()
+        self.blocked_keys.intersection_update(
+            key for key in self.blocked_keys if key in self.keys_down or pressed[key])
+        for player, state in self.joy_input_state.items():
+            self.blocked_buttons[player].intersection_update(state['buttons'])
+            self.blocked_axes[player].intersection_update(state['axis'])
+
+    def _reset_match_presentation(self):
+        self.selection_started = None
+        self.feedback.clear()
+        self.special_ready = {'p1': True, 'p2': True}
+        self.ready_since = {'p1': None, 'p2': None}
+        self.hit_freeze_frames = 0
+        self.counter_attack_window = {'p1': 0, 'p2': 0}
+        self.screen_shake_offset = (0, 0)
+        self.attract_mode = False
+        self.idle_timer = 0
+        self.ai_p1 = self.ai_p2 = None
+
+    def _new_fighter(self, *args, **kwargs):
+        return PresentedFighter(*args, on_contact=self._contact_feedback,
+                                key_blocked=self.blocked_keys.__contains__, **kwargs)
+
+    def _contact_feedback(self, defender, kind, position):
+        attacker = self.p1 if defender is self.p2 else self.p2
+        heavy = bool(attacker and 'heavy' in (attacker.attack_type or ''))
+        effect = ContactEffect(*position, kind, heavy)
+        # Latest contact per defender, maximum two labels even in barrages.
+        effect.fighter_id = defender.fighter_id
+        self.feedback = [old for old in self.feedback if old.fighter_id != defender.fighter_id]
+        self.feedback.append(effect)
+        self._spawn_particles(*position, effect.color)
+        if kind == 'hit' and heavy:
+            self.screen_shake = max(self.screen_shake, 6)
+
+    def _finish_fight_frame(self):
+        """Once per display tick, including hit-stop/round/result windows.
+
+        Combo housekeeping retains its old post-update timing. Cosmetic age
+        advances here, so drawing a screenshot can never change a fight.
+        """
+        now = pygame.time.get_ticks()
+        self.combat_system.update(now)
+        for effect in self.feedback:
+            effect.update()
+        self.feedback = [effect for effect in self.feedback if effect.active]
+        for fighter in (self.p1, self.p2):
+            if fighter is None:
+                continue
+            ready = now - fighter.last_special_time >= 4000
+            if ready and not self.special_ready[fighter.fighter_id]:
+                self.ready_since[fighter.fighter_id] = now
+            self.special_ready[fighter.fighter_id] = ready
+
+    def _enter_results(self):
+        self.state = "GAME_OVER"
+        self.result_selected = 0
+        self._consume_held_inputs()
+        self.screen_shake = 0
+        self.screen_shake_offset = (0, 0)
+        self.feedback.clear()
+
+    def _activate_result(self):
+        self._consume_held_inputs()
+        if self.result_selected == 0:
+            self._start_fight()
+        elif self.result_selected == 1:
+            self._exit_fight_to_character_select()
+        else:
+            self._go_back()
     
     def _spawn_particles(self, x, y, color):
         """Spawn particle effects at position"""
         for _ in range(5):
-            vx = random.uniform(-5, 5)
-            vy = random.uniform(-5, -2)
+            vx = self.cosmetic_rng.uniform(-5, 5)
+            vy = self.cosmetic_rng.uniform(-5, -2)
             self.particles.append(Particle(x, y, color, (vx, vy)))
+        del self.particles[:-96]
     
     def _update_ai_fighter(self, ai_fighter, target):
         """
@@ -1854,7 +1970,8 @@ class Game:
     def _spawn_dust_particles(self, x, y):
         """Spawn dust particles for landing/jumping effects"""
         for _ in range(8):
-            vx = random.uniform(-3, 3)
-            vy = random.uniform(-1, -0.5)
+            vx = self.cosmetic_rng.uniform(-3, 3)
+            vy = self.cosmetic_rng.uniform(-1, -0.5)
             color = (139, 90, 43)  # Dirt brown
             self.particles.append(Particle(x, y, color, (vx, vy)))
+        del self.particles[:-96]

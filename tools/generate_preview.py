@@ -22,6 +22,7 @@ the game's art leaves `git status` clean.
 
 Usage:
     python tools/generate_preview.py
+    python tools/generate_preview.py --output path/to/local-review
 
 Re-run this after changing character art, the HUD, or stage art, so the
 preview stays representative of the current game.
@@ -134,12 +135,14 @@ def main():
     for _ in range(WARMUP_TICKS):
         clock.tick()
         game._update_fight()
+        game._finish_fight_frame()
 
     frame_names = []
     for i in range(FRAME_COUNT):
         for _ in range(SIM_TICKS_PER_FRAME):
             clock.tick()
             game._update_fight()
+            game._finish_fight_frame()
 
         # Suppress the in-game "DEMO - PRESS ANY BUTTON TO PLAY" attract-mode
         # banner for the capture only: it's meant for the cabinet's own idle
@@ -177,4 +180,9 @@ def main():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', default=OUT_DIR,
+                        help='Derived frame directory (defaults to assets/preview)')
+    OUT_DIR = os.path.abspath(parser.parse_args().output)
     main()
