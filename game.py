@@ -288,7 +288,8 @@ class Game:
                     # If both axes are near center, clear axis state
                     if abs(axis0_val) < 0.3 and abs(axis1_val) < 0.3:
                         if self.joy_input_state[joystick_id]['axis']:
-                            print(f"[CLEANUP] Joy {joystick_id} axes cleared (were: {self.joy_input_state[joystick_id]['axis']})")
+                            if c.INPUT_DEBUG:
+                                print(f"[CLEANUP] Joy {joystick_id} axes cleared (were: {self.joy_input_state[joystick_id]['axis']})")
                             self.joy_input_state[joystick_id]['axis'].clear()
             # Poll cleanup must release guards in this frame, before a stick
             # can be pressed in the same direction on the next frame.
@@ -560,7 +561,7 @@ class Game:
             self.blocked_axes[joystick_id].intersection_update(new_axis_state)
             
             # Debug: Log axis state changes
-            if new_axis_state != old_axis_state:
+            if c.INPUT_DEBUG and new_axis_state != old_axis_state:
                 print(f"[Joy {joystick_id}] Axis changed: {old_axis_state} -> {new_axis_state} (results={results})")
         
         results = [value for value in results
@@ -676,7 +677,7 @@ class Game:
             in_axis_state = axis_tuple in state['axis'] and axis_tuple not in self.blocked_axes[joystick_id]
             
             # Debug: log movement checks
-            if action in ['left', 'right', 'jump', 'down']:
+            if c.INPUT_DEBUG and action in ['left', 'right', 'jump', 'down']:
                 if in_axis_state or (self.state == "FIGHT" and action in ['left', 'right']):
                     print(f"[Joy {joystick_id}] Check {action}: axis_tuple={axis_tuple}, in_state={in_axis_state}, state['axis']={state['axis']}")
             
@@ -1393,17 +1394,7 @@ class Game:
                     effect.register_hit()
                     self.screen_shake = 10
         
-        # Update particles
-        for p in self.particles[:]:
-            p.update()
-            if p.timer <= 0:
-                self.particles.remove(p)
-        
-        # Update hit effects
-        for effect in self.hit_effects[:]:
-            effect.update()
-            if not effect.active:
-                self.hit_effects.remove(effect)
+        self._update_impact_effects()
     
     def _draw_fight(self):
         """Render fight screen with vintage arcade HUD"""
@@ -1432,14 +1423,11 @@ class Game:
             shake_x, shake_y = 0, 0
         
         # Draw fighters (or winner sequence)
-        if self.winner_sequence_active:
-            # Determine winner and loser
-            if self.p1.health <= 0:
-                winner = self.p2
-                loser = self.p1
-            else:
-                winner = self.p1
-                loser = self.p2
+        if self.winner_sequence_active and self.round_winner in ("p1", "p2"):
+            # Timeouts can leave both fighters alive: use the adjudicated
+            # winner, just like the round banner, not a KO-only health test.
+            winner, loser = ((self.p1, self.p2) if self.round_winner == "p1"
+                             else (self.p2, self.p1))
             
             # Draw blood puddle at loser's position
             drawing.draw_blood_puddle(game_surface, loser.rect.centerx, c.FLOOR_Y, 80)
@@ -1580,9 +1568,26 @@ class Game:
             label = "SUPER READY" if ready else "SUPER"
             text = self.text_renderer.render(label, 'small', c.YELLOW if ready else c.WHITE)
             self.screen.blit(text, (x, 536))
+            self._draw_parry_recovery(fighter, x)
             # Full remains visibly full; no pulsing down to black.
             draw_health_bar(self.screen, x, 564, 280, 14, ratio,
                             c.YELLOW if ready else c.PURPLE, show_segments=False)
+
+    def _draw_parry_recovery(self, fighter, x):
+        """Cooldown recovery, not a promise to override stun/attack restrictions.
+
+        Use the fighter's update-counted cooldown, never an independent timer.
+        A percentage keeps that distinction clear; ON is the actual parry window.
+        """
+        cooldown = max(0, min(c.PARRY_COOLDOWN_FRAMES, fighter.parry_cooldown))
+        progress = (c.PARRY_COOLDOWN_FRAMES - cooldown) * 100 // c.PARRY_COOLDOWN_FRAMES
+        active = fighter.parrying and fighter.parry_window > 0
+        status = "ON" if active else f"{progress}%"
+        label = self.text_renderer.render("PARRY", 'small', MUTED)
+        value = self.text_renderer.render(status, 'small',
+                                          c.YELLOW if active or cooldown == 0 else MUTED)
+        self.screen.blit(label, (x + 160, 536))
+        self.screen.blit(value, (x + 280 - value.get_width(), 536))
 
     def _round_banner(self, title, detail, color):
         """One quiet, centered stage shared by the existing round windows."""
@@ -1765,6 +1770,17 @@ class Game:
         return PresentedFighter(*args, on_contact=self._contact_feedback,
                                 key_blocked=self.blocked_keys.__contains__, **kwargs)
 
+    def _update_impact_effects(self):
+        """Age cosmetic pools only; never projectiles, fighters or special moves."""
+        for particle in self.particles[:]:
+            particle.update()
+            if particle.timer <= 0:
+                self.particles.remove(particle)
+        for effect in self.hit_effects[:]:
+            effect.update()
+            if not effect.active:
+                self.hit_effects.remove(effect)
+
     def _contact_feedback(self, defender, kind, position):
         attacker = self.p1 if defender is self.p2 else self.p2
         heavy = bool(attacker and 'heavy' in (attacker.attack_type or ''))
@@ -1785,6 +1801,11 @@ class Game:
         """
         now = pygame.time.get_ticks()
         self.combat_system.update(now)
+        # _update_fight returns before aging these pools throughout a round
+        # ending. Let the final contact fade without unfreezing any combat or
+        # restarting the dormant winner animation / extending the round window.
+        if self.state == "FIGHT" and self.round_over:
+            self._update_impact_effects()
         for effect in self.feedback:
             effect.update()
         self.feedback = [effect for effect in self.feedback if effect.active]

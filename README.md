@@ -51,6 +51,10 @@ Hits, blocked contacts and successful parries have separate, short visual
 cues, triggered by resolved contacts rather than lingering hitbox overlap.
 Special recovery has a one-time READY accent at its existing four-second gate.
 Health, timer and meters stay anchored through impact and round announcements.
+Beside each SUPER meter, **PARRY %** shows recovery of the existing parry
+cooldown; **100%** means recovered and **ON** marks the active parry window.
+Recovery follows fighter updates, so it stops during hit-stop and round endings.
+It does not bypass attack, block or stun restrictions.
 Combat rules, character drawings and audio levels are unchanged.
 
 ### Keyboard Controls
@@ -115,6 +119,10 @@ $env:STREETFIGHTER_WINDOWED = "1"; python main.py
 # bash
 STREETFIGHTER_WINDOWED=1 python main.py
 ```
+
+Input-polling diagnostics are off during normal play. For troubleshooting only,
+set `STREETFIGHTER_INPUT_DEBUG=1` before starting the game. This enables verbose
+controller polling output without changing controls or combat.
 
 ## 🖼️ Attract-mode preview (ArcadeLauncher)
 

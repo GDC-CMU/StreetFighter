@@ -391,7 +391,7 @@ class Fighter:
             result = self.joy_input_getter(action, joystick_id)
             if result:
                 # Debug: log when movement actions are detected
-                if action in ['left', 'right', 'jump', 'down']:
+                if c.INPUT_DEBUG and action in ['left', 'right', 'jump', 'down']:
                     print(f"[P{2 if self.is_p2 else 1}] {action} pressed via joystick")
                 return True
         

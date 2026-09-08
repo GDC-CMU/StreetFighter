@@ -9,6 +9,10 @@ SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 FPS = 60
 
+# Input polling diagnostics are opt-in: synchronous per-frame output can stall
+# the play loop when stdout is a terminal or a launcher-owned pipe.
+INPUT_DEBUG = os.environ.get("STREETFIGHTER_INPUT_DEBUG", "") == "1"
+
 # Set STREETFIGHTER_WINDOWED=1 to run in a window instead of fullscreen.
 # Fullscreen is the default because that is how the cabinet is played;
 # developing on a laptop against a fullscreen window is painful.
